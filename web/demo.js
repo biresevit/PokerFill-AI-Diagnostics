@@ -24,11 +24,11 @@ function sample(prompt,parent){
    finding('Deployment timing does not match','The update completed at 17:30 CET, more than two hours before the restart. The available evidence points to the heartbeat watchdog rather than that deployment.','confirmed',['E1','E2'])],
    limitations:['The initiating reason for the database interruption is not in this sample. A timeout does not establish whether the cause was networking, SQL load or an application stall.']};
  }else if(lower.includes('balance')||lower.includes('fund')||lower.includes('unobserved')){
-  items=[evidence('E1','get_investigation_history',{included_turns:parent?1:0,meaning:'Earlier dialogue is context, not current proof'}),
+  items=[evidence('E1','get_investigation_history',{included_turns:parent?1:0,meaning:'Earlier dialogue is context, not current proof',previous_diagnosis:parent?.result.report.summary||null}),
    evidence('E2','get_funding_capacity',{configured_accounts:60,accounts_with_observed_wallets:42,accounts_with_unobserved_funds:18,native_units_conversion_verified:false})];
   report={summary:'Unknown funds are not the same as insufficient funds. In this sample, 18 accounts have no usable wallet observation, so a funding shortfall cannot be confirmed.',
    findings:[finding('Missing observations remain unknown','A missing balance does not mean an account has zero funds. The sample contains observations for 42 accounts and no usable observation for 18.','confirmed',['E2']),
-   finding('Funding does not explain the original shortfall yet','The earlier diagnosis identified stale lobby evidence. No verified balance-to-buy-in comparison establishes an additional funding cause.','unknown',['E1','E2'])],
+   finding('A funding cause is unconfirmed',parent?'The earlier answer remains available as context. This wallet evidence does not establish an additional funding cause.':'No verified balance-to-buy-in comparison establishes a funding shortage in this sample.','unknown',parent?['E1','E2']:['E2'])],
    limitations:['Wallet snapshots are cached observations. Native balances cannot be compared with buy-ins without a verified unit conversion.']};
  }else if(lower.includes('mtt')||lower.includes('registering')){
   items=[evidence('E1','get_tournament_diagnostics',{tournament:'Evening Open',planned_registrations:10,confirmed_registrations:4}),

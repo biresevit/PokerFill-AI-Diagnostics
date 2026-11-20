@@ -180,7 +180,10 @@ async def protect_private_api(request, call_next):
 
 
 @app.get('/health')
-def health(): return {'status': 'ready', 'mode': MODE}
+def health():
+    try:revision=json.loads((ROOT/'release.json').read_text())['revision']
+    except (OSError,ValueError,KeyError):revision='development'
+    return {'status':'ready','mode':MODE,'revision':revision}
 
 
 @app.post('/investigations', status_code=202)

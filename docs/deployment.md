@@ -29,10 +29,10 @@ The startup command is `bash startup.sh`. It sets source paths and starts exactl
 
 ```bash
 python scripts/vendor_backoffice.py
-python scripts/package_release.py
-az webapp deploy --resource-group YOUR_GROUP --name YOUR_APP \
-  --src-path artifacts/deploy.zip --type zip --clean true --track-status false
+python scripts/deploy_azure.py --group YOUR_GROUP --app YOUR_APP
 ```
+
+The helper packages reviewed source, submits an asynchronous deployment and waits for `/health` to serve the expected Git revision. This avoids mistaking a deployment-request gateway timeout for a failed background build. It requires a logged-in Azure CLI; on Windows, `AZURE_CLI_PYTHON` can point to a Python environment containing `azure.cli` if `az` is not on PATH.
 
 The package uses an explicit source allowlist. It excludes `.env` files, local databases, credentials, operator artifacts and screenshots. Oryx installs `requirements.txt`; the web assets and verified integration helpers are included. Do not deploy from a dirty checkout containing unreviewed source changes.
 

@@ -25,4 +25,4 @@ jobs:
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Deploy source package
-        run: az webapp deploy --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" --name "${{ vars.AZURE_APP_NAME }}" --src-path artifacts/deploy.zip --type zip --clean true --track-status false
+        run: python scripts/deploy_azure.py --group "${{ vars.AZURE_RESOURCE_GROUP }}" --app "${{ vars.AZURE_APP_NAME }}"

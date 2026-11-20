@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as temporary:
             page=browser.new_page(viewport={'width':1440,'height':1150},device_scale_factor=1.5)
             errors=[];api_requests=[]
             page.on('pageerror',lambda error:errors.append(str(error)))
-            page.on('request',lambda request:api_requests.append(request.url) if '/investigations' in request.url else None)
+            page.on('request',lambda request:api_requests.append(request.url) if any(p in request.url for p in ('/investigations','/history','/api/')) else None)
             page.goto(base+'/demo',wait_until='networkidle')
             page.locator('.diagnosis-summary').wait_for()
             assert 'stale lobby' in page.locator('.diagnosis-summary').inner_text().lower()
