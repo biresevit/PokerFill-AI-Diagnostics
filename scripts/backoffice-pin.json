@@ -1,0 +1,31 @@
+{
+  "repository": "biresevit/PokerBackoffice",
+  "commit": "ec46162b415249284c40b0d600450682d355fbf1",
+  "files": {
+    "api/backoffice/__init__.py": "ae53fd8f53a1bd6acd197953760698a0a2f949462e1e28efcb42c4b76810fb88",
+    "api/backoffice/app.py": "115aece0f7a07141fc88a786402d46d047d66ee3277645fd38568c9feea4e6f9",
+    "api/backoffice/casino_settings.py": "d4acc8f9e033a5d3d20efc342d776a75375f36173eeb84aef00913297d686b5d",
+    "api/backoffice/chat.py": "49213ba58f41cec81f554c0ba8e3286517d4c8f0696ceec974e5e8d7fba9e96f",
+    "api/backoffice/contact.py": "2c0801b8be98aeae31d2fd21d3451b9c73bef1dfe3db7bc917852fb1797bda5c",
+    "api/backoffice/db.py": "1430d1fa3cd06e0fe0eaa907e58e5f69aa2ba5326fdf71f695f2bbb0317add0c",
+    "api/backoffice/diagnostics.py": "95d95d49c2b7ba5f31a77c31582d2e2e375cedba098b375eae493cd191128265",
+    "api/backoffice/distributions.py": "fe1330e3471ed3c2b7a8c065ce4c965134333dc9fd3f9e1d8494e62ce4d66536",
+    "api/backoffice/histories.py": "037bf45adb0f63e082316f11831035ae1f9c573644186816f8d6365b1d3a6e83",
+    "api/backoffice/live_cards.py": "82d012933769b40de3281c0a36c9c39ef8af119719ae93da33355f88df1c20ac",
+    "api/backoffice/machine_logs.py": "4b9080d879f28aad34dd7103663b6d325eef3f255171c2ebd86e8404858c9b56",
+    "api/backoffice/manual.py": "95d907721c1c5155995f80e85a932499a8faf43dc7e84ed1a984508ae303448e",
+    "api/backoffice/manual_tasks.py": "4fd3b703733eb672c496d4099e224f3c17bb2ac999c267c2d2c01275c0096e85",
+    "api/backoffice/monitoring.py": "a774b7d2d814980bd96d69f2fb96b6c251fbf8df30075619597501af058e774e",
+    "api/backoffice/mtts.py": "2b1c6aa9e04924e364155798ce391861aea6d2e448a4a05e9a0113d12ddb0fcd",
+    "api/backoffice/pairing.py": "5a94edc57274849e532288c315cfeaee74b4b3eab516f75f56860a53a27814c0",
+    "api/backoffice/sessions.py": "bfd143e2d8f40ad893c3fc927b1b7110672fbcbbb1a0065d563fb04fb55eca34",
+    "api/backoffice/store.py": "9358fc6d08e8e470fde1dd7ba4b98d80a4896b75dcc2811ac4d8ab051fc7b30f",
+    "api/backoffice/updates.py": "6e9c7c698bd6f5cf3fcc8aa2998e8e2f823846f02eed616142fb063461f4c875",
+    "api/backoffice/validation.py": "6e6b127f297580e3a8cb625add5e1bc68d3b24e93b9e2e6149793b72323c35fb",
+    "api/schedule_controller/__init__.py": "e9ba9e636e149f2f492868cdc262cc3104f0256a94e3b58dbc01a81dfbd4d76e",
+    "api/schedule_controller/hand_settlement.py": "cccd126ad278971c1e4cce1f7e13d3288d7cdeedb76ae59a2acc445a81a41282",
+    "api/schedule_controller/mtt_plans.py": "5ef6d1819d785deb21dba23cce0ccb4423a80db5c25e5493b57635aeea8f26c4",
+    "api/schedule_controller/rules.py": "93cf248860aae9bb016f2eb9d566a672e82a3ef70c4bac31ae7d16b73df5ad09",
+    "api/schedule_controller/update_rollouts.py": "b97b75e8b11a7e26b96375e3a4712d93648c3e95f1e72fbcf2a04c375d50c850"
+  }
+}

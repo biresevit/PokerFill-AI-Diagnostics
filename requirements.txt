@@ -1,0 +1,11 @@
+langgraph==1.2.23
+langchain-openai==1.8.3
+fastapi==0.165.0
+uvicorn==0.54.0
+python-tds==1.17.1
+pyOpenSSL>=26.1,<26.2
+certifi>=2025
+tzdata>=2025.2
+azure-storage-blob>=12.24,<13
+
+azure-identity>=1.19,<2
