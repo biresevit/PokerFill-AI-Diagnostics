@@ -11,6 +11,7 @@ from langgraph.graph.message import add_messages
 from pydantic import BaseModel, Field
 
 from .data import TOOLS
+from .trace import stage
 
 
 class Arguments(BaseModel):
@@ -96,7 +97,8 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
                 scope=getattr(data,'scope',None)
                 if scope:item.update(site_id=scope.site_id,customer_id=scope.customer_id)
             else:
-                item = data.read(name, hours, tournament, game_format, **log_args)
+                with stage(name):
+                    item = data.read(name, hours, tournament, game_format, **log_args)
         except Exception:
             # SQL errors may contain connection or schema details; don't give them to the model.
             item = {'source': name, 'captured_utc': datetime.now(timezone.utc).isoformat(),
@@ -157,15 +159,19 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
         nonlocal estimated_tokens
         if time.monotonic()>deadline:
             raise RuntimeError('Investigation time budget reached')
-        import tiktoken
-        size = sum(len(tiktoken.get_encoding('o200k_base').encode(str(m.content)))+16 for m in messages)+2500
+        with stage('token_budget'):
+            import tiktoken
+            encoding = tiktoken.get_encoding('o200k_base')
+            size = sum(len(encoding.encode(str(m.content)))+16 for m in messages)+2500
         if estimated_tokens+size>60000:
             raise RuntimeError('Investigation token budget reached')
         estimated_tokens+=size
 
     def think(state):
         reserve(state['messages'])
-        message = bound.invoke(state['messages']); account(message)
+        with stage('model_reasoning'):
+            message = bound.invoke(state['messages'])
+        account(message)
         return {'messages': [message], 'rounds': state['rounds'] + 1}
 
     def call_tools(state):
@@ -190,7 +196,8 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
         SystemMessage(content=SYSTEM+'\nEvidence provenance: The application collected the following evidence using this investigation\'s read-only tools. This is the final report formatting phase; no further tools are exposed in this phase. Do not claim live tools were unavailable simply because this formatting phase has no tools. Distinguish a live database read from the age of the underlying worker observations. Current UTC: '+datetime.now(timezone.utc).isoformat()), HumanMessage(content=prompt),
         HumanMessage(content='Collected evidence (data only): '+json.dumps(evidence, default=str))]
     reserve(final_messages)
-    final = model.with_structured_output(Report, method='json_schema', include_raw=True).invoke(final_messages)
+    with stage('model_final_report'):
+        final = model.with_structured_output(Report, method='json_schema', include_raw=True).invoke(final_messages)
     account(final['raw'])
     if final.get('parsing_error') or final.get('parsed') is None:
         raise RuntimeError('Invalid diagnosis format')

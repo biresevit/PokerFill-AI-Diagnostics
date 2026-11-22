@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ConfigDict
 from .agent import investigate
 from .data import Data
 from .conversations import MAX_TURNS, context
+from .trace import request_id, stage
 
 ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = Path(os.getenv('POKERFILL_DIAGNOSTICS_HISTORY', str(ROOT/'artifacts/diagnostics/history.sqlite3')))
@@ -141,19 +142,23 @@ async def worker(queue):
     while True:
         inquiry = await queue.get()
         rid = str(inquiry.request_id)
+        trace_token = request_id.set(rid)
         try:
             with connection() as c: c.execute("UPDATE investigations SET status='running' WHERE id=?", (rid,))
             async with asyncio.timeout(JOB_TIMEOUT_SECONDS):
                 data = RecordedData(inquiry.scope) if MODE == 'recorded' else Data(inquiry.scope)
                 if MODE=='live' and os.getenv('POKERFILL_DIAGNOSTICS_COLLECT_LOGS')=='1':
-                    try:await asyncio.to_thread(data.wait_for_logs)
+                    try:
+                        with stage("log_preflight"):
+                            await asyncio.to_thread(data.wait_for_logs)
                     except Exception:logging.getLogger(__name__).warning('Log preflight unavailable; continuing database diagnosis')
                 with connection() as c:
                     current=c.execute('SELECT root_id,turn_index FROM investigations WHERE id=? AND owner=?',
                                       (rid,inquiry.scope.owner())).fetchone()
                     previous=[r for r in thread(c,inquiry.scope.owner(),current['root_id']) if r['turn_index']<current['turn_index']]
-                result = await asyncio.to_thread(investigate, inquiry.prompt, data, mode=MODE,
-                                                history=context(previous),history_total=len(previous))
+                with stage("investigation"):
+                    result = await asyncio.to_thread(investigate, inquiry.prompt, data, mode=MODE,
+                                                     history=context(previous),history_total=len(previous))
             with connection() as c:
                 c.execute("UPDATE investigations SET status='completed',result=? WHERE id=?", (json.dumps(result, default=str), rid))
         except Exception as error:
@@ -161,6 +166,7 @@ async def worker(queue):
             with connection() as c:
                 c.execute("UPDATE investigations SET status='failed',error=? WHERE id=?", (failure_message(error), rid))
         finally:
+            request_id.reset(trace_token)
             queue.task_done()
 
 
