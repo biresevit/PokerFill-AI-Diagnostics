@@ -106,7 +106,11 @@ def test_provider_quota_failure_is_clear_and_keeps_previous_answer(client,monkey
     class QuotaError(Exception):
         status_code=429
         body={'code':'credit_balance_exhausted','type':'insufficient_quota','message':'PRIVATE-KEY-MARKER'}
-    def fail(*args,**kwargs):raise QuotaError()
+    def fail(*args,**kwargs):
+        try:
+            raise QuotaError()
+        except QuotaError as error:
+            raise RuntimeError('Model invocation failed') from error
     with monkeypatch.context() as patch:
         patch.setattr(service,'investigate',fail)
         rid=str(uuid.uuid4())
@@ -185,3 +189,32 @@ def test_broker_forwards_parent_without_accepting_forged_scope(monkeypatch):
         return io.BytesIO(b'{"id":"job"}')
     monkeypatch.setattr('urllib.request.urlopen',open_)
     dispatch(Store(),1006,'POST',None,dict(prompt='Explain that diagnosis',request_id=str(uuid.uuid4()),parent_id=parent,scope=scope(customer_id=999)))
+
+
+def test_time_budget_and_throttling_have_distinct_messages():
+    class RateLimitError(Exception):
+        status_code=429
+
+    assert 'four-minute processing limit' in service.failure_message(RuntimeError('Investigation time budget reached'))
+    assert 'rate limit' in service.failure_message(RateLimitError())
+
+
+def test_blocked_diagnosis_leaves_running_state(client, monkeypatch):
+    from threading import Event
+
+    unblock = Event()
+    monkeypatch.setattr(service, 'JOB_TIMEOUT_SECONDS', .05)
+    monkeypatch.setattr(service, 'investigate', lambda *args, **kwargs: unblock.wait(2))
+    rid = str(uuid.uuid4())
+    try:
+        body = dict(scope=scope(), prompt='Investigate the blocked request', request_id=rid)
+        assert client.post('/investigations', json=body).status_code == 202
+        for _ in range(100):
+            row = client.post('/investigations/'+rid, json=scope()).json()
+            if row['status'] == 'failed':
+                break
+            time.sleep(.02)
+        assert row['status'] == 'failed'
+        assert 'diagnosis service timed out' in row['error']
+    finally:
+        unblock.set()

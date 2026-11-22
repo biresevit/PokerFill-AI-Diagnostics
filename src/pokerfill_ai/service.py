@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[2]
 DB_PATH = Path(os.getenv('POKERFILL_DIAGNOSTICS_HISTORY', str(ROOT/'artifacts/diagnostics/history.sqlite3')))
 TOKEN = os.getenv('POKERFILL_DIAGNOSTICS_TOKEN', '')
 MODE = os.getenv('POKERFILL_DIAGNOSTICS_MODE', 'live')
+JOB_TIMEOUT_SECONDS = 300
 
 
 class Scope(BaseModel):
@@ -100,17 +101,28 @@ def authorize(authorization):
 def failure_message(error):
     # Only classify allowlisted provider metadata; never expose raw messages,
     # request bodies, API keys or connection details.
-    body=getattr(error,'body',None)
-    body=body if isinstance(body,dict) else {}
-    if isinstance(body.get('error'),dict):body=body['error']
-    code=body.get('code') or getattr(error,'code',None)
-    if code in ('credit_balance_exhausted','insufficient_quota') or body.get('type')=='insufficient_quota':
-        return 'OpenAI API credits are exhausted. Replenish credits for the configured API account, then retry this question. Earlier answers are saved.'
-    if getattr(error,'status_code',None)==429:
+    seen=set()
+    provider_statuses=set()
+    current=error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        body=getattr(current,'body',None)
+        body=body if isinstance(body,dict) else {}
+        if isinstance(body.get('error'),dict):body=body['error']
+        code=body.get('code') or getattr(current,'code',None)
+        if code in ('credit_balance_exhausted','insufficient_quota') or body.get('type')=='insufficient_quota':
+            return 'OpenAI API credits are exhausted. Replenish credits for the configured API account, then retry this question. Earlier answers are saved.'
+        provider_statuses.add(getattr(current,'status_code',None))
+        current=current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+    if 429 in provider_statuses:
         return 'The model provider rate limit was reached. Wait briefly, then retry this question. Earlier answers are saved.'
-    if getattr(error,'status_code',None) in (401,403):
+    if provider_statuses.intersection((401,403)):
         return 'Model API access was rejected. Check the configured API key and project permissions, then retry.'
-    if type(error) is RuntimeError and str(error) in ('Investigation token budget reached','Investigation time budget reached'):
+    if isinstance(error, TimeoutError):
+        return 'The diagnosis service timed out while gathering evidence or preparing the answer. Retry with a narrower time window. Earlier answers are saved.'
+    if type(error) is RuntimeError and str(error)=='Investigation time budget reached':
+        return 'The investigation exceeded its four-minute processing limit. Retry with a narrower time window. Earlier answers are saved.'
+    if type(error) is RuntimeError and str(error)=='Investigation token budget reached':
         return str(error)+'. Narrow the question or start a new investigation. Earlier answers are saved.'
     return 'Investigation could not finish. No diagnosis was produced. Check service configuration and retry.'
 
@@ -131,16 +143,17 @@ async def worker(queue):
         rid = str(inquiry.request_id)
         try:
             with connection() as c: c.execute("UPDATE investigations SET status='running' WHERE id=?", (rid,))
-            data = RecordedData(inquiry.scope) if MODE == 'recorded' else Data(inquiry.scope)
-            if MODE=='live' and os.getenv('POKERFILL_DIAGNOSTICS_COLLECT_LOGS')=='1':
-                try:await asyncio.to_thread(data.wait_for_logs)
-                except Exception:logging.getLogger(__name__).warning('Log preflight unavailable; continuing database diagnosis')
-            with connection() as c:
-                current=c.execute('SELECT root_id,turn_index FROM investigations WHERE id=? AND owner=?',
-                                  (rid,inquiry.scope.owner())).fetchone()
-                previous=[r for r in thread(c,inquiry.scope.owner(),current['root_id']) if r['turn_index']<current['turn_index']]
-            result = await asyncio.to_thread(investigate, inquiry.prompt, data, mode=MODE,
-                                            history=context(previous),history_total=len(previous))
+            async with asyncio.timeout(JOB_TIMEOUT_SECONDS):
+                data = RecordedData(inquiry.scope) if MODE == 'recorded' else Data(inquiry.scope)
+                if MODE=='live' and os.getenv('POKERFILL_DIAGNOSTICS_COLLECT_LOGS')=='1':
+                    try:await asyncio.to_thread(data.wait_for_logs)
+                    except Exception:logging.getLogger(__name__).warning('Log preflight unavailable; continuing database diagnosis')
+                with connection() as c:
+                    current=c.execute('SELECT root_id,turn_index FROM investigations WHERE id=? AND owner=?',
+                                      (rid,inquiry.scope.owner())).fetchone()
+                    previous=[r for r in thread(c,inquiry.scope.owner(),current['root_id']) if r['turn_index']<current['turn_index']]
+                result = await asyncio.to_thread(investigate, inquiry.prompt, data, mode=MODE,
+                                                history=context(previous),history_total=len(previous))
             with connection() as c:
                 c.execute("UPDATE investigations SET status='completed',result=? WHERE id=?", (json.dumps(result, default=str), rid))
         except Exception as error:
