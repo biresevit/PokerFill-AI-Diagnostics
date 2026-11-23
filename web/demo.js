@@ -85,4 +85,3 @@ $('#sample-restart').onclick=()=>{
  $('#diagnosis-new').click();$('#diagnosis-prompt').value='Why did Worker 212 restart around 20:02 CET?';
  $('#diagnosis-form').requestSubmit();
 };
-$('#platform').onchange=()=>{document.title=`PokerFill AI · ${$('#platform').value} sample`;};
