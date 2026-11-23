@@ -19,11 +19,11 @@
 
 ## The problem
 
-An operator notices that fewer entries are running than scheduled. A restart, a stale lobby, account cooldowns and missing wallet observations can all appear near the incident—but proximity does not establish a cause.
+PokerFill workers run on customer machines and interact with the native poker client and game server. When entries drop or joins fail, the problem can originate in PokerFill, on the customer's machine or account, or in the client or game server. A lost connection, a login failure, insufficient account funds, and a server-side bug can all look similar from the dashboard.
 
-PokerFill AI lets the operator ask a question, gathers bounded operational evidence, and produces findings labelled **confirmed**, **probable** or **unknown**. Every finding cites tool evidence. Follow-up questions retain the original investigation and recent exchanges; fresh evidence is requested when the question needs it.
+The agent correlates schedule history, worker logs, and operational records for the incident window. Each finding cites the evidence and is labelled **confirmed**, **probable**, or **unknown**. Customers can use the diagnosis to address issues they control, such as a local connection or account problem, and share the relevant evidence with PokerFill support or the game operator when escalation is needed. Follow-up questions can request fresh evidence within the same investigation.
 
-The agent diagnoses ring, SNG and MTT operations for **EvenBet and BluffPoker**. It cannot change code or settings, restart workers, register bots, move funds or log accounts in. An authenticated operator's broker can request diagnostic archives outside the model's tool loop.
+The agent has read-only access for ring, SNG, and MTT investigations. An authenticated Backoffice broker can request diagnostic archives for the agent to inspect.
 
 ## What you can explore
 
