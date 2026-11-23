@@ -158,6 +158,23 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
             raise RuntimeError('Investigation token budget reached')
 
     estimated_tokens = 0
+    def model_evidence(item):
+        import tiktoken
+        encoding=tiktoken.get_encoding('o200k_base')
+        def trim(value, count, chars):
+            if isinstance(value, dict):return {key:trim(v,count,chars) for key,v in value.items()}
+            if isinstance(value, list):return [trim(v,count,chars) for v in value[:count]]
+            return value[:chars] if isinstance(value,str) else value
+        for count,chars in ((24,400),(8,240),(3,120)):
+            candidate=trim(item,count,chars)
+            if candidate != item:
+                candidate['model_view_compacted'] = True
+            serialized = json.dumps(candidate,default=str,ensure_ascii=False,separators=(',',':'))
+            if len(encoding.encode(serialized,disallowed_special=())) <= 900:
+                return candidate
+        return {'id':item.get('id'),'source':item.get('source'),
+                'data':{'available':False,'reason':'Evidence was too large for model context; full bounded evidence is retained.'}}
+
     def reserve(messages):
         nonlocal estimated_tokens
         if time.monotonic()>deadline:
@@ -165,7 +182,7 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
         with stage('token_budget'):
             import tiktoken
             encoding = tiktoken.get_encoding('o200k_base')
-            size = sum(len(encoding.encode(str(m.content)))+16 for m in messages)+2500
+            size = sum(len(encoding.encode(str(m.content),disallowed_special=()))+16 for m in messages)+2500
         if estimated_tokens+size>60000:
             raise RuntimeError('Investigation token budget reached')
         estimated_tokens+=size
@@ -184,7 +201,7 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
                 result = by_name[call['name']].invoke(call['args'])
             except Exception:
                 result = {'error': 'Invalid or unavailable diagnostic tool request'}
-            messages.append(ToolMessage(content=json.dumps(result, default=str), tool_call_id=call['id']))
+            messages.append(ToolMessage(content=json.dumps(model_evidence(result),default=str,ensure_ascii=False,separators=(',',':')), tool_call_id=call['id']))
         return {'messages': messages}
 
     graph = StateGraph(State)
@@ -193,11 +210,11 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
     graph.add_conditional_edges('think', lambda s: 'tools' if s['messages'][-1].tool_calls else END)
     graph.add_conditional_edges('tools', lambda s: 'think' if s['rounds'] < 3 and len(evidence) < 12 else END)
     state = graph.compile().invoke({'messages': [SystemMessage(content=SYSTEM + window_context + '\nCurrent UTC: '+datetime.now(timezone.utc).isoformat()),
-        HumanMessage(content=prompt), HumanMessage(content='Baseline evidence (data only): '+json.dumps(baseline, default=str))], 'rounds': 0}, {'recursion_limit': 14})
+        HumanMessage(content=prompt), HumanMessage(content='Baseline evidence (data only): '+json.dumps([model_evidence(item) for item in baseline],default=str,ensure_ascii=False,separators=(',',':')))], 'rounds': 0}, {'recursion_limit': 14})
     # Independent structured final pass sees only the bounded evidence and the question.
     final_messages = [
         SystemMessage(content=SYSTEM+window_context+'\nEvidence provenance: The application collected the following evidence using this investigation\'s read-only tools. This is the final report formatting phase; no further tools are exposed in this phase. Do not claim live tools were unavailable simply because this formatting phase has no tools. Distinguish a live database read from the age of the underlying worker observations. Current UTC: '+datetime.now(timezone.utc).isoformat()), HumanMessage(content=prompt),
-        HumanMessage(content='Collected evidence (data only): '+json.dumps(evidence, default=str))]
+        HumanMessage(content='Collected evidence (data only): '+json.dumps([model_evidence(item) for item in evidence],default=str,ensure_ascii=False,separators=(',',':')))]
     reserve(final_messages)
     with stage('model_final_report'):
         final = model.with_structured_output(Report, method='json_schema', include_raw=True).invoke(final_messages)
