@@ -56,9 +56,13 @@ class Data:
             if not pending or not pending['Count']:return
             time.sleep(min(3,max(0,deadline-time.monotonic())))
 
-    def read(self, name, hours=24, tournament='', game_format='RING', *, machine_id=0, around_utc='', topic='all'):
+    def read(self, name, hours=24, tournament='', game_format='RING', *, machine_id=0, around_utc='', topic='all', from_utc=None, to_utc=None):
         if name not in TOOLS or not 1 <= hours <= 168 or len(tournament) > 200 or game_format not in ('RING','SNG','MTT'):
             raise ValueError('Invalid diagnostic query')
+        now=datetime.now(timezone.utc)
+        start=datetime.fromisoformat(from_utc) if from_utc else now-timedelta(hours=hours)
+        end=datetime.fromisoformat(to_utc) if to_utc else now
+        sql_window=tuple(value.astimezone(timezone.utc).replace(tzinfo=None) for value in (start,end))
         s = self.scope
         with self.factory() as db:
             store = Store(db, Context(s.customer_id, s.provider, s.subject, 'viewer'))
@@ -85,13 +89,16 @@ class Data:
                               joins_paused=bool(site.get('joins_paused')), enabled=site['enabled'])
                 result['semantics'] = 'Ring counts confirmed seats; SNG/MTT count live registration commitments. MTT targets use per-tournament plans.'
             elif name == 'get_schedule_history':
-                end = datetime.now(timezone.utc).astimezone(ZoneInfo(site['timezone']))
-                metrics = store.entry_metrics(sid, {'format':game_format, 'from':(end-timedelta(hours=hours)).date().isoformat(), 'to':end.date().isoformat()})
+                zone = ZoneInfo(site['timezone'])
+                metrics = store.entry_metrics(sid, {'format':game_format,
+                    'from':start.astimezone(zone).date().isoformat(), 'to':end.astimezone(zone).date().isoformat()})
                 points=metrics['points']
+                if from_utc:
+                    points=[point for point in points if start<=point['at']<=end]
                 changes=[{'from':a['at'],'to':b['at'],'running_before':a['running'],'running_after':b['running'],
                           'delta':b['running']-a['running'],'scheduled_before':a['scheduled'],'scheduled_after':b['scheduled']}
                          for a,b in zip(points,points[1:]) if b['running']<a['running']]
-                result = {'format':game_format,'timezone':site['timezone'],'from':metrics['from'],'to':metrics['to'],
+                result = {'format':game_format,'timezone':site['timezone'],'from':from_utc or metrics['from'],'to':to_utc or metrics['to'],
                           'largest_drops':sorted(changes,key=lambda x:x['delta'])[:12],
                           'largest_shortfalls':sorted(points,key=lambda p:p['scheduled']-p['running'],reverse=True)[:12],
                           'limitations':['Targets use current schedule/plans reconstructed over the selected local dates; past schedule edits are not reconstructed.',
@@ -155,8 +162,8 @@ class Data:
                 result = db.rows('''SELECT TOP(100) Kind,Status,ResultCode,COUNT(*) AS Count,
                     MIN(UpdatedUtc) AS FirstUtc,MAX(UpdatedUtc) AS LastUtc
                     FROM scheduler.Command WHERE SiteId=%s
-                    AND UpdatedUtc>=DATEADD(hour,-%s,SYSUTCDATETIME())
-                    GROUP BY Kind,Status,ResultCode ORDER BY COUNT(*) DESC''', sid, hours)
+                    AND UpdatedUtc>=%s AND UpdatedUtc<%s
+                    GROUP BY Kind,Status,ResultCode ORDER BY COUNT(*) DESC''', sid, *sql_window)
             elif name == 'get_tournament_diagnostics':
                 result = {'plans': db.rows('''SELECT TOP(100) SeriesName,TotalBots,EarlyPercent,EarlyHours
                     FROM scheduler.MttPlan WHERE SiteId=%s AND (%s='' OR CHARINDEX(%s,SeriesName)>0)
@@ -172,20 +179,20 @@ class Data:
                     'limitations': ['EvenBet does not publish all tournament registration metadata. Open entries alone do not prove a seat or successful registration.']}
             elif name == 'get_worker_log_signals':
                 from .log_signals import read
-                result = read(db, s, hours, machine_id=machine_id, around_utc=around_utc, topic=topic)
+                result = read(db, s, hours, machine_id=machine_id, around_utc=around_utc, topic=topic, from_utc=from_utc, to_utc=to_utc)
             elif name == 'get_incident_timeline':
                 result = {'commands': db.rows('''SELECT TOP(100) CommandId,MachineId,Kind,Status,ResultCode,
                         CreatedUtc,UpdatedUtc FROM scheduler.Command WHERE SiteId=%s
-                        AND UpdatedUtc>=DATEADD(hour,-%s,SYSUTCDATETIME()) ORDER BY UpdatedUtc DESC''', sid, hours),
+                        AND UpdatedUtc>=%s AND UpdatedUtc<%s ORDER BY UpdatedUtc DESC''', sid, *sql_window),
                     'session_ends': db.rows('''SELECT TOP(100) MachineId,ActualEndUtc,EndReason
                         FROM scheduler.AccountSession WHERE SiteId=%s
-                        AND ActualEndUtc>=DATEADD(hour,-%s,SYSUTCDATETIME()) ORDER BY ActualEndUtc DESC''', sid, hours),
+                        AND ActualEndUtc>=%s AND ActualEndUtc<%s ORDER BY ActualEndUtc DESC''', sid, *sql_window),
                     'updates':db.rows('''SELECT TOP(24) t.MachineId,t.Status,t.StartedUtc,t.CompletedUtc,
                         r.Immediate,v.Label FROM scheduler.UpdateRollout r
                         JOIN scheduler.MachineUpdateTask t ON t.RolloutId=r.RolloutId
                         JOIN scheduler.UpdateRelease v ON v.ReleaseId=r.ReleaseId
                         WHERE r.CustomerId=%s AND r.SiteId=%s
-                        AND t.StartedUtc>=DATEADD(hour,-%s,SYSUTCDATETIME()) ORDER BY t.StartedUtc DESC''',s.customer_id,sid,hours),
+                        AND t.StartedUtc>=%s AND t.StartedUtc<%s ORDER BY t.StartedUtc DESC''',s.customer_id,sid,*sql_window),
                     'limitations': ['Entry history is reconstructed from retained data, not a continuous observer recording. Use get_worker_log_signals for scoped timestamped logs and coverage. Update records prove rollout timing, not all possible process restart causes.']}
             else:
                 installed = db.one("SELECT OBJECT_ID(N'scheduler.AccountDiagnosticSnapshot') AS object_id")

@@ -218,3 +218,30 @@ def test_blocked_diagnosis_leaves_running_state(client, monkeypatch):
         assert 'diagnosis service timed out' in row['error']
     finally:
         unblock.set()
+
+
+def test_incident_window_persists_with_buffer_and_reaches_agent(client, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    captured = []
+    original = service.investigate
+    def capture(*args, **kwargs):
+        captured.append(kwargs['window'])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(service, 'investigate', capture)
+    start = datetime.now(timezone.utc) - timedelta(days=1)
+    end = start + timedelta(hours=1)
+    rid = str(uuid.uuid4())
+    body = dict(scope=scope(), prompt='Investigate the selected hour', request_id=rid,
+                window=dict(mode='incident', from_utc=start.isoformat(), to_utc=end.isoformat()))
+    assert client.post('/investigations', json=body).status_code == 202
+    for _ in range(100):
+        row = client.post('/investigations/'+rid, json=scope()).json()
+        if row['status'] in ('completed', 'failed'):
+            break
+        time.sleep(.02)
+    assert row['status'] == 'completed'
+    assert captured == [row['window']]
+    assert datetime.fromisoformat(row['window']['evidence_from_utc']) == start - timedelta(minutes=15)
+    assert datetime.fromisoformat(row['window']['evidence_to_utc']) == end + timedelta(minutes=15)

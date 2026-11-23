@@ -9,11 +9,12 @@ import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import AwareDatetime, BaseModel, Field, ConfigDict, model_validator
 from .agent import investigate
 from .data import Data
 from .conversations import MAX_TURNS, context
@@ -37,12 +38,33 @@ class Scope(BaseModel):
         return hashlib.sha256(json.dumps(self.model_dump(), sort_keys=True).encode()).hexdigest()
 
 
+class EvidenceWindow(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    from_utc: AwareDatetime
+    to_utc: AwareDatetime
+    mode: Literal['now', 'incident']
+
+    @model_validator(mode='after')
+    def validate_range(self):
+        if not timedelta(0) < self.to_utc-self.from_utc <= timedelta(days=7):
+            raise ValueError('Invalid investigation window')
+        if self.to_utc > datetime.now(timezone.utc)+timedelta(minutes=1):
+            raise ValueError('Investigation window ends in the future')
+        return self
+
+    def bounds(self):
+        buffer = timedelta(minutes=15) if self.mode=='incident' else timedelta()
+        return dict(evidence_from_utc=(self.from_utc-buffer).astimezone(timezone.utc).isoformat(),
+                    evidence_to_utc=min(self.to_utc+buffer,datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat())
+
+
 class Inquiry(BaseModel):
     model_config = ConfigDict(extra='forbid')
     scope: Scope
     prompt: str = Field(min_length=3, max_length=2000)
     request_id: uuid.UUID
     parent_id: uuid.UUID | None = None
+    window: EvidenceWindow | None = None
 
 
 @contextmanager
@@ -91,7 +113,7 @@ def public_turn(row, full=False):
     if result and not full:
         result={k:result.get(k) for k in ('report','usage','mode','history_context')}
         result['evidence_partial']=True
-    return {k:row[k] for k in ('id','parent_id','root_id','turn_index','prompt','status','created_utc','error')} | {'result':result}
+    return {k:row[k] for k in ('id','parent_id','root_id','turn_index','prompt','status','created_utc','error')} | {'result':result, 'window':json.loads(row['scope']).get('window')}
 
 
 def authorize(authorization):
@@ -153,12 +175,14 @@ async def worker(queue):
                             await asyncio.to_thread(data.wait_for_logs)
                     except Exception:logging.getLogger(__name__).warning('Log preflight unavailable; continuing database diagnosis')
                 with connection() as c:
-                    current=c.execute('SELECT root_id,turn_index FROM investigations WHERE id=? AND owner=?',
+                    current=c.execute('SELECT root_id,turn_index,scope FROM investigations WHERE id=? AND owner=?',
                                       (rid,inquiry.scope.owner())).fetchone()
                     previous=[r for r in thread(c,inquiry.scope.owner(),current['root_id']) if r['turn_index']<current['turn_index']]
+                window=json.loads(current['scope']).get('window')
+                window_args={'window':window} if window else {}
                 with stage("investigation"):
                     result = await asyncio.to_thread(investigate, inquiry.prompt, data, mode=MODE,
-                                                     history=context(previous),history_total=len(previous))
+                                                     history=context(previous),history_total=len(previous), **window_args)
             with connection() as c:
                 c.execute("UPDATE investigations SET status='completed',result=? WHERE id=?", (json.dumps(result, default=str), rid))
         except Exception as error:
@@ -208,6 +232,9 @@ def health():
 @app.post('/investigations', status_code=202)
 async def create(body: Inquiry, authorization: str = Header(default='')):
     authorize(authorization)
+    scope = body.scope.model_dump()
+    if body.window:
+        scope['window'] = body.window.model_dump(mode='json') | body.window.bounds()
     with connection() as c:
         old = c.execute('SELECT * FROM investigations WHERE id=?', (str(body.request_id),)).fetchone()
         if old:
@@ -230,7 +257,7 @@ async def create(body: Inquiry, authorization: str = Header(default='')):
         recent = c.execute("SELECT COUNT(*) FROM investigations WHERE owner=? AND created_utc>=?", (body.scope.owner(), datetime.fromtimestamp(time.time()-3600, timezone.utc).isoformat())).fetchone()[0]
         if pending >= 2 or recent >= 10: raise HTTPException(429, 'Investigation limit reached; try again later')
         c.execute('''INSERT INTO investigations(id,owner,scope,prompt,status,created_utc,parent_id,root_id,turn_index)
-            VALUES(?,?,?,?,?,?,?,?,?)''', (str(body.request_id), body.scope.owner(),body.scope.model_dump_json(),
+            VALUES(?,?,?,?,?,?,?,?,?)''', (str(body.request_id), body.scope.owner(),json.dumps(scope),
             body.prompt, 'queued', datetime.now(timezone.utc).isoformat(),parent_id,root_id,turn_index))
     app.state.queue.put_nowait(body)
     return {'id': str(body.request_id), 'status': 'queued', 'root_id':root_id, 'mode': MODE}

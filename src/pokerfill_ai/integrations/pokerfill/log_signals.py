@@ -4,6 +4,9 @@ import json
 import re
 import zipfile
 from collections import Counter
+from bisect import bisect_right
+from time import monotonic
+from ...trace import stage
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -11,6 +14,7 @@ SIGNALS = ('CREDENTIAL_EXPIRED','LOGIN_REPLACED','INSUFFICIENT_CHIPS','INSUFFICI
            'LOGIN_FAILED','AUTH_FAILED','CONNECTION_CLOSED','TimeoutError','ConnectionError',
            'SQLTransientConnectionError','join_failure_limit')
 MAX_BYTES = 64*1024*1024
+PARSE_SECONDS = 25
 
 
 # Match known operational templates, never return exception messages or arbitrary log text.
@@ -46,7 +50,19 @@ STAMP = re.compile(r'^(?:\[\s*\d+\]\s*)?(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:
 ERROR_TYPES = ('WorkerFenced','TimeoutError','ConnectionError','SQLTransientConnectionError',
                'OperationalError','ProgrammingError','RuntimeError','CancelledError','KeyError','TypeError',
                'ValueError','AttributeError','MemoryError','PermissionError','OSError','RecursionError')
-GATE=re.compile('|'.join('(?:'+p.replace('(?i)','')+')' for p in [*EVENTS.values(),*(re.escape(c) for c in (*SIGNALS,*ERROR_TYPES))]),re.I)
+EVENT_MARKERS = (
+    'poker site ', 'table_closed', 'no heartbeat', 'temporary sql failure',
+    'database cannot be reached', 'restarting with the seats', 'leaving every ring table',
+    'cloud worker stopped', 'pokercontroller worker stopped', 'restarting a stopped',
+    'updater restarted', 'installation approved', 'starting the new applications',
+    'update healthy', 'update failed', 'rolled back', 'supervision failed', 'deadlock',
+    'database', '40501', '10928', '10929', 'login failed for user', 'invalid ',
+    'violation of ', 'cannot insert duplicate', 'connection refused', 'actively refused',
+    '10061', 'connection reset', '10054', 'out of memory', 'memoryerror', 'exited during startup',
+)
+LOG_MARKERS = tuple(code.lower() for code in (*SIGNALS, *ERROR_TYPES)) + EVENT_MARKERS
+SITE_TAG = re.compile(r'\[site (\d+)\]')
+NAMED_SITE = re.compile(r'(?:Poker site|Playing poker site) (\d+) (?:stopped|on machine|was taken off)')
 SIGNAL_PATTERNS={c:re.compile(r'(?<![A-Za-z_])'+re.escape(c)+r'(?![A-Za-z_])') for c in (*SIGNALS,*ERROR_TYPES)}
 EVENT_PATTERNS={c:re.compile(p) for c,p in EVENTS.items()}
 
@@ -56,21 +72,44 @@ def timestamp(line):
     return match.group(1).replace('/','-') if match else None
 
 
-def near(stamp, around):
-    if not around or not stamp:return True
+def near(stamp, around, window=None):
+    if not stamp or (not around and not window):return True
     try:value=datetime.fromisoformat(stamp.replace(',', '.').replace('Z','+00:00'))
     except ValueError:return False
     # Worker logs use PC-local wall time with no zone. Never silently label them UTC.
+    if window:
+        start,end=window
+        if value.tzinfo is None:
+            return start.date()-timedelta(days=1)<=value.date()<=end.date()+timedelta(days=1)
+        return start<=value<end
     if value.tzinfo is None:return abs((value.date()-around.date()).days)<=1
     return abs((value-around).total_seconds())<=3600
 
 
-def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_site_id=None):
+def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_site_id=None, from_utc=None, to_utc=None):
     around=datetime.fromisoformat(around_utc.replace("Z","+00:00")) if around_utc else None
+    window=None
+    if from_utc and to_utc:
+        window=tuple(datetime.fromisoformat(value.replace('Z','+00:00')) for value in (from_utc,to_utc))
+        if any(value.tzinfo is None for value in window) or window[0]>=window[1]:
+            raise ValueError('Invalid archive window')
+        around=window[0]+(window[1]-window[0])/2
     if around is not None and around.tzinfo is None:raise ValueError("Incident time must include timezone")
     if topic not in ("all","restart","authentication","funding","connectivity"):raise ValueError("Invalid log topic")
     if len(blob)>MAX_BYTES: raise ValueError('Archive too large')
-    counts=Counter(); events=[]; matched=0; coverage=[]
+    counts=Counter(); events=[]; ranks=[]; matched=0; coverage=[]
+    deadline=monotonic()+PARSE_SECONDS
+    parse_limited=False
+    incident_clock=around.astimezone(timezone.utc).replace(tzinfo=None) if around else None
+
+    def rank(event):
+        raw=event.get('timestamp_utc') or event['timestamp_reported']
+        try:value=datetime.fromisoformat(raw.replace(',','.').replace('Z','+00:00')) if raw else None
+        except ValueError:value=None
+        value_clock=value.astimezone(timezone.utc).replace(tzinfo=None) if value and value.tzinfo else value
+        distance=abs((value_clock-incident_clock).total_seconds()) if incident_clock and value_clock else -value_clock.replace(tzinfo=timezone.utc).timestamp() if value_clock else float('inf')
+        return (0 if event['code'] in EVENTS else 1,distance)
+
     with zipfile.ZipFile(io.BytesIO(blob)) as z:
         entries=z.infolist()
         if len(entries)>256 or sum(i.file_size for i in entries)>640*1024*1024:
@@ -96,85 +135,90 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
             modified=timestamp(str(meta.get('modified_utc','')))
             try:modified_time=datetime.fromisoformat(modified.replace('Z','+00:00')) if modified else None
             except ValueError:modified_time=None
-            if around and modified_time and modified_time.tzinfo and modified_time<around-timedelta(hours=1):
+            if around and modified_time and modified_time.tzinfo and modified_time<(window[0] if window else around-timedelta(hours=1)):
                 coverage.append({'source':source,'file_index':file_number,'scanned':False,
                     'reason':'File modification precedes requested incident window; filesystem UTC metadata, not a complete content audit.',
                     'modified_utc':modified,'bytes_scanned':0})
                 continue
-            text=z.read(i).decode('utf-8',errors='replace')
-            stamps=[];record_stamp=None;record_site=None
-            for line in text.splitlines():
-                stamp=timestamp(line)
-                if stamp:
-                    if not stamps:stamps.append(stamp)
-                    elif len(stamps)==1:stamps.append(stamp)
-                    else:stamps[-1]=stamp
-                if stamp:
-                    record_stamp=stamp;record_site=None
-                tagged=re.search(r'\[site (\d+)\]',line)
-                if tagged:record_site=int(tagged.group(1))
-                named_site=re.search(r'(?:Poker site|Playing poker site) (\d+) (?:stopped|on machine|was taken off)',line)
-                if named_site:record_site=int(named_site.group(1))
-                if not GATE.search(line):continue
-                # Skip explicitly tagged lines from another site on shared PCs.
-                if record_site is not None and record_site!=site_id:continue
-                stamp=stamp or record_stamp
-                resolved=stamp
-                if stamp and zone and source in ('controller','worker'):
-                    try:
-                        local=datetime.fromisoformat(stamp.replace(',','.').replace('Z','+00:00'))
-                        # Ambiguous DST wall times remain unverified.
-                        if local.tzinfo is None and local.replace(tzinfo=zone,fold=0).utcoffset()==local.replace(tzinfo=zone,fold=1).utcoffset():
-                            resolved=local.replace(tzinfo=zone).isoformat()
-                    except ValueError:pass
-                if not near(resolved,around):continue
-                for code in SIGNALS:
-                    counts[code]+=len(SIGNAL_PATTERNS[code].findall(line))
-                codes=[code for code,pattern in EVENT_PATTERNS.items() if pattern.search(line)] if topic in ('all','restart') else []
-                allowed=(*SIGNALS,*ERROR_TYPES) if topic=='all' else {
-                    'authentication':('CREDENTIAL_EXPIRED','LOGIN_REPLACED','LOGIN_FAILED','AUTH_FAILED'),
-                    'funding':('INSUFFICIENT_CHIPS','INSUFFICIENT_FUNDS'),
-                    'connectivity':('CONNECTION_CLOSED','TimeoutError','ConnectionError','SQLTransientConnectionError'),
-                    'restart':ERROR_TYPES}.get(topic,())
-                codes += [code for code in allowed if SIGNAL_PATTERNS[code].search(line)]
-                for code in codes:
-                    event={'code':code,'timestamp_reported':stamp,'clock':'offset_in_timestamp' if stamp and re.search(r'(Z|[+-]\d{2}:\d{2})$',stamp) else 'PC local time; timezone unverified',
-                           'source':source,'file_index':file_number,'site_attribution':'tagged' if record_site else 'machine-wide; site attribution unconfirmed'}
-                    if resolved!=stamp:
-                        event['timestamp_utc']=datetime.fromisoformat(resolved).astimezone(timezone.utc).isoformat()
-                        event['clock']='collector timezone: '+str(zone)
-                    if code=='application_startup_exit':
-                        event['exit_code']=int(re.search(r'exit code (-?\d+)',line).group(1))
-                    events.append(event)
-                    matched+=1
-                    # Prefer lifecycle evidence to generic errors and rank incident proximity.
-                    def rank(e):
-                        raw=e.get('timestamp_utc') or e['timestamp_reported']
-                        try:value=datetime.fromisoformat(raw.replace(',','.').replace('Z','+00:00')) if raw else None
-                        except ValueError:value=None
-                        value_clock=value.astimezone(timezone.utc).replace(tzinfo=None) if value and value.tzinfo else value
-                        incident_clock=around.astimezone(timezone.utc).replace(tzinfo=None) if around else None
-                        distance=abs((value_clock-incident_clock).total_seconds()) if incident_clock and value_clock else -value_clock.replace(tzinfo=timezone.utc).timestamp() if value_clock else float('inf')
-                        return (0 if e['code'] in EVENTS else 1,distance)
-                    events.sort(key=rank)
-                    del events[24:]
-            meta=next((f for f in manifest.get('files',[]) if f.get('file')==i.filename),{})
-            coverage.append({'source':source,'file_index':file_number,'scanned':True,'first_timestamp_reported':stamps[0] if stamps else None,
-                'last_timestamp_reported':stamps[-1] if stamps else None,'bytes_scanned':i.file_size,
+            marks=[];record_stamp=None;record_site=None;bytes_scanned=0
+            with z.open(i) as raw:
+                for line_number, raw_line in enumerate(raw):
+                    if line_number%256==0 and monotonic()>=deadline:
+                        parse_limited=True
+                        break
+                    bytes_scanned+=len(raw_line)
+                    line=raw_line.decode('utf-8',errors='replace').rstrip('\r\n')
+                    stamp=timestamp(line)
+                    if stamp:
+                        if not marks:marks.append(stamp)
+                        elif len(marks)==1:marks.append(stamp)
+                        else:marks[-1]=stamp
+                    if stamp:
+                        record_stamp=stamp;record_site=None
+                    tagged=SITE_TAG.search(line) if '[site ' in line else None
+                    if tagged:record_site=int(tagged.group(1))
+                    lowered=line.lower()
+                    named_site=NAMED_SITE.search(line) if 'poker site ' in lowered else None
+                    if named_site:record_site=int(named_site.group(1))
+                    if not any(marker in lowered for marker in LOG_MARKERS):continue
+                    # Skip explicitly tagged lines from another site on shared PCs.
+                    if record_site is not None and record_site!=site_id:continue
+                    stamp=stamp or record_stamp
+                    resolved=stamp
+                    if stamp and zone and source in ('controller','worker'):
+                        try:
+                            local=datetime.fromisoformat(stamp.replace(',','.').replace('Z','+00:00'))
+                            # Ambiguous DST wall times remain unverified.
+                            if local.tzinfo is None and local.replace(tzinfo=zone,fold=0).utcoffset()==local.replace(tzinfo=zone,fold=1).utcoffset():
+                                resolved=local.replace(tzinfo=zone).isoformat()
+                        except ValueError:pass
+                    if not near(resolved,around,window):continue
+                    for code in SIGNALS:
+                        counts[code]+=len(SIGNAL_PATTERNS[code].findall(line))
+                    codes=[code for code,pattern in EVENT_PATTERNS.items() if pattern.search(line)] if topic in ('all','restart') else []
+                    allowed=(*SIGNALS,*ERROR_TYPES) if topic=='all' else {
+                        'authentication':('CREDENTIAL_EXPIRED','LOGIN_REPLACED','LOGIN_FAILED','AUTH_FAILED'),
+                        'funding':('INSUFFICIENT_CHIPS','INSUFFICIENT_FUNDS'),
+                        'connectivity':('CONNECTION_CLOSED','TimeoutError','ConnectionError','SQLTransientConnectionError'),
+                        'restart':ERROR_TYPES}.get(topic,())
+                    codes += [code for code in allowed if SIGNAL_PATTERNS[code].search(line)]
+                    for code in codes:
+                        event={'code':code,'timestamp_reported':stamp,'clock':'offset_in_timestamp' if stamp and re.search(r'(Z|[+-]\d{2}:\d{2})$',stamp) else 'PC local time; timezone unverified',
+                               'source':source,'file_index':file_number,'site_attribution':'tagged' if record_site else 'machine-wide; site attribution unconfirmed'}
+                        if resolved!=stamp:
+                            event['timestamp_utc']=datetime.fromisoformat(resolved).astimezone(timezone.utc).isoformat()
+                            event['clock']='collector timezone: '+str(zone)
+                        if code=='application_startup_exit':
+                            event['exit_code']=int(re.search(r'exit code (-?\d+)',line).group(1))
+                        matched+=1
+                        priority=rank(event)
+                        position=bisect_right(ranks,priority)
+                        if position<24:
+                            ranks.insert(position,priority)
+                            events.insert(position,event)
+                            del ranks[24:]
+                            del events[24:]
+            coverage.append({'source':source,'file_index':file_number,'scanned':True,'first_timestamp_reported':marks[0] if marks else None,
+                'last_timestamp_reported':marks[-1] if marks else None,'bytes_scanned':bytes_scanned,
+                'scan_incomplete':parse_limited,
                 'truncated':meta.get('truncated') if isinstance(meta.get('truncated'),bool) else 'unknown','original_bytes':meta.get('original_bytes') if isinstance(meta.get('original_bytes'),int) else None})
             files+=1
+            if parse_limited:break
     return {'machine_id':machine_id,'captured_utc':timestamp(str(manifest.get('captured_utc',''))), 'signals':{k:v for k,v in counts.items() if v}, 'files_scanned':files,
             'events':events,'matched_events':matched,'events_truncated':matched>24,'file_coverage':coverage[:24],
-            'coverage_truncated':len(coverage)>24,
+            'coverage_truncated':len(coverage)>24 or parse_limited,'scan_time_limit_reached':parse_limited,
             'collection_omissions':dict(Counter('budget_exhausted' if f.get('skipped')=='Uncompressed collection budget exhausted' else 'file_unavailable' for f in manifest.get('files',[]) if f.get('skipped'))),
-            'topic':topic,'requested_around_utc':around_utc or None,'collector_time_zone':str(zone) if zone else None,
+            'topic':topic,'requested_around_utc':None if window else around_utc or None,
+            'from_utc':from_utc,'to_utc':to_utc,'collector_time_zone':str(zone) if zone else None,
             'event_ranking':'Lifecycle templates first, then proximity to requested wall-clock time (local timezone unverified) or latest reported time; bounded to 24 events.',
             'limitations':['Counts cover bounded archive tails, not necessarily the whole requested time range.',
+                *(['Archive parsing reached its time limit; only the scanned portion is represented.'] if parse_limited else []),
+                *(['Unverified local timestamps and undated lines may fall outside the requested interval.'] if window else []),
                 'Signals may repeat one incident. A zero count does not establish absence.',
                 'Raw lines, account identities, secrets and hand data are never returned.']}
 
 
-def read(db, scope, hours, *, machine_id=0, around_utc='', topic='all'):
+def read(db, scope, hours, *, machine_id=0, around_utc='', topic='all', from_utc=None, to_utc=None):
     from azure.storage.blob import BlobServiceClient
     import os
     connection=os.getenv('BACKOFFICE_DIAGNOSTICS_STORAGE') or os.getenv('StorageConnString')
@@ -185,20 +229,29 @@ def read(db, scope, hours, *, machine_id=0, around_utc='', topic='all'):
         WHERE m.CustomerId=%s AND a.SiteId=%s AND m.IsActive=1 AND (%s=0 OR m.MachineId=%s)
         ORDER BY m.MachineId""",scope.customer_id,scope.site_id,machine_id,machine_id)
     rows=[]; inventory=[]
+    now=datetime.now(timezone.utc)
+    since=(datetime.fromisoformat(from_utc) if from_utc else now-timedelta(hours=hours)).astimezone(timezone.utc).replace(tzinfo=None)
+    incident_end=datetime.fromisoformat(to_utc).astimezone(timezone.utc).replace(tzinfo=None) if to_utc else None
     for machine in machines:
         mid=machine['MachineId']
         recent=db.rows("""SELECT TOP(4) r.SiteId,r.MachineId,r.BlobName,r.SizeBytes,r.CreatedUtc,r.Status,r.ExpiresUtc
             FROM backoffice.MachineLogRequest r
             WHERE r.CustomerId=%s AND r.MachineId=%s
             AND EXISTS(SELECT 1 FROM scheduler.Site s WHERE s.SiteId=r.SiteId AND s.CustomerId=r.CustomerId)
-            AND r.ExpiresUtc>SYSUTCDATETIME() AND r.CreatedUtc>=DATEADD(hour,-%s,SYSUTCDATETIME())
-            ORDER BY r.CreatedUtc DESC""",scope.customer_id,mid,hours)
+            AND r.ExpiresUtc>SYSUTCDATETIME() AND r.CreatedUtc>=%s
+            ORDER BY CASE WHEN %s IS NOT NULL AND r.CreatedUtc>=%s THEN 0 ELSE 1 END,
+                     CASE WHEN %s IS NOT NULL AND r.CreatedUtc>=%s THEN r.CreatedUtc END ASC,
+                     r.CreatedUtc DESC""",scope.customer_id,mid,since,incident_end,incident_end,incident_end,incident_end)
         inventory.append({'machine_id':mid,'collections':[{k:v for k,v in r.items() if k not in ('BlobName','SizeBytes','MachineId','ExpiresUtc')} for r in recent[:2]]})
         ready=next((r for r in recent if r['Status']=='ready'),None)
         if ready:rows.append(ready)
     # Bound storage/network work. Narrow by machine to inspect other PCs.
     rows=rows[:1]
     results=[]
+    result={'inventory':inventory,'archives':results,'archive_limit':1,'machines_truncated':len(machines)==24,
+            'limitations':['Reads completed unexpired archives; pending collections are listed. Recheck after collection completes. At most one machine archive per call; select machine_id for others. No raw text, paths, hand data or account identities are sent to the model. Machine-wide events cannot prove which site activity was affected.']}
+    if not rows:
+        return result
     if connection:
         storage=BlobServiceClient.from_connection_string(connection,connection_timeout=5,read_timeout=10,retry_total=0)
     else:
@@ -208,6 +261,17 @@ def read(db, scope, hours, *, machine_id=0, around_utc='', topic='all'):
         for row in rows:
             if not row['SizeBytes'] or row['SizeBytes']>MAX_BYTES:continue
             blob=client.get_blob_client('machine-diagnostics',row['BlobName'])
-            if blob.get_blob_properties().size>MAX_BYTES:continue
-            results.append(summarize(blob.download_blob(max_concurrency=1).readall(),scope.site_id,row['MachineId'],around_utc=around_utc,topic=topic,archive_site_id=row['SiteId']))
-    return {'inventory':inventory,'archives':results,'archive_limit':1,'machines_truncated':len(machines)==24,'limitations':['Reads completed unexpired archives; pending collections are listed. Recheck after collection completes. At most one machine archive per call; select machine_id for others. No raw text, paths, hand data or account identities are sent to the model. Machine-wide events cannot prove which site activity was affected.']}
+            with stage('worker_log_archive_properties'):
+                if blob.get_blob_properties().size>MAX_BYTES:continue
+            with stage('worker_log_archive_download'):
+                download_deadline=monotonic()+25
+                archive=bytearray()
+                for chunk in blob.download_blob(max_concurrency=1).chunks():
+                    if monotonic()>=download_deadline:
+                        raise TimeoutError('Worker log download budget reached')
+                    if len(archive)+len(chunk)>MAX_BYTES:
+                        raise ValueError('Archive too large')
+                    archive.extend(chunk)
+            with stage('worker_log_archive_parse'):
+                results.append(summarize(archive,scope.site_id,row['MachineId'],around_utc=around_utc,topic=topic,archive_site_id=row['SiteId'],from_utc=from_utc,to_utc=to_utc))
+    return result

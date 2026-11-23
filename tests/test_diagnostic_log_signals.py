@@ -146,3 +146,30 @@ def test_closed_table_startup_error_is_exposed_without_raw_details():
     result=summarize(out.getvalue(),1006,5,topic='restart')
     assert {'worker_site_restart','table_closed_response'}=={e['code'] for e in result['events']}
     assert 'private' not in json.dumps(result)
+
+
+
+def test_parse_deadline_reports_incomplete_coverage(monkeypatch):
+    from pokerfill_ai.integrations.pokerfill import log_signals
+
+    times = iter([0, log_signals.PARSE_SECONDS + 1])
+    monkeypatch.setattr(log_signals, 'monotonic', lambda: next(times))
+    result = summarize(archive(), 1006, 5)
+
+    assert result['scan_time_limit_reached']
+    assert result['coverage_truncated']
+    assert result['file_coverage'][0]['scan_incomplete']
+    assert result['file_coverage'][0]['bytes_scanned'] == 0
+
+
+def test_explicit_log_window_excludes_known_outside_timestamps():
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, 'w') as z:
+        z.writestr('manifest.json', json.dumps(dict(site_id=1006, machine_id=5, iana_time_zone='Europe/Budapest')))
+        z.writestr('controller/run/worker.log',
+                   '2026-11-22 19:59:59 INFO CREDENTIAL_EXPIRED\n'
+                   '2026-11-22 20:00:00 INFO CREDENTIAL_EXPIRED\n'
+                   '2026-11-22 21:00:00 INFO CREDENTIAL_EXPIRED\n')
+    result = summarize(out.getvalue(), 1006, 5, from_utc='2026-11-22T19:00:00Z', to_utc='2026-11-22T20:00:00Z')
+    assert result['signals']['CREDENTIAL_EXPIRED'] == 1
+    assert result['events'][0]['timestamp_utc'] == '2026-11-22T19:00:00+00:00'

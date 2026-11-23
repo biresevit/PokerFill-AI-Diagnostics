@@ -72,10 +72,11 @@ Investigate the requested period using bounded tools. Do not claim a full histor
 Stay within the question, and produce a concise diagnosis with limitations.'''
 
 
-def investigate(prompt, data, *, mode='live', model=None, history=None, history_total=0):
+def investigate(prompt, data, *, mode='live', model=None, history=None, history_total=0, window=None):
     history=history or []
     history_context={'included_turns':len(history),'previous_turns':history_total,
                      'request_ids':[t['request_id'] for t in history]}
+    window_context = ('\nUse the form evidence window '+json.dumps(window)+' for the incident. Current health and lobby data are context only.' if window else '')
     evidence, usage = [], {'input_tokens': 0, 'output_tokens': 0, 'total_tokens': 0}
     deadline=time.monotonic()+240
     def bounded(value, text_limit=400):
@@ -98,6 +99,8 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
                 if scope:item.update(site_id=scope.site_id,customer_id=scope.customer_id)
             else:
                 with stage(name):
+                    if window and name in ('get_schedule_history','get_join_outcomes','get_incident_timeline','get_worker_log_signals'):
+                        log_args.update(from_utc=window['evidence_from_utc'],to_utc=window['evidence_to_utc'])
                     item = data.read(name, hours, tournament, game_format, **log_args)
         except Exception:
             # SQL errors may contain connection or schema details; don't give them to the model.
@@ -189,11 +192,11 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
     graph.add_edge(START, 'think')
     graph.add_conditional_edges('think', lambda s: 'tools' if s['messages'][-1].tool_calls else END)
     graph.add_conditional_edges('tools', lambda s: 'think' if s['rounds'] < 3 and len(evidence) < 12 else END)
-    state = graph.compile().invoke({'messages': [SystemMessage(content=SYSTEM + '\nCurrent UTC: '+datetime.now(timezone.utc).isoformat()),
+    state = graph.compile().invoke({'messages': [SystemMessage(content=SYSTEM + window_context + '\nCurrent UTC: '+datetime.now(timezone.utc).isoformat()),
         HumanMessage(content=prompt), HumanMessage(content='Baseline evidence (data only): '+json.dumps(baseline, default=str))], 'rounds': 0}, {'recursion_limit': 14})
     # Independent structured final pass sees only the bounded evidence and the question.
     final_messages = [
-        SystemMessage(content=SYSTEM+'\nEvidence provenance: The application collected the following evidence using this investigation\'s read-only tools. This is the final report formatting phase; no further tools are exposed in this phase. Do not claim live tools were unavailable simply because this formatting phase has no tools. Distinguish a live database read from the age of the underlying worker observations. Current UTC: '+datetime.now(timezone.utc).isoformat()), HumanMessage(content=prompt),
+        SystemMessage(content=SYSTEM+window_context+'\nEvidence provenance: The application collected the following evidence using this investigation\'s read-only tools. This is the final report formatting phase; no further tools are exposed in this phase. Do not claim live tools were unavailable simply because this formatting phase has no tools. Distinguish a live database read from the age of the underlying worker observations. Current UTC: '+datetime.now(timezone.utc).isoformat()), HumanMessage(content=prompt),
         HumanMessage(content='Collected evidence (data only): '+json.dumps(evidence, default=str))]
     reserve(final_messages)
     with stage('model_final_report'):
