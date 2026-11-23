@@ -99,7 +99,7 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
                 if scope:item.update(site_id=scope.site_id,customer_id=scope.customer_id)
             else:
                 with stage(name):
-                    if window and name in ('get_schedule_history','get_join_outcomes','get_incident_timeline','get_worker_log_signals'):
+                    if window and name in ('get_schedule_history','get_historical_ring_target','get_join_outcomes','get_incident_timeline','get_worker_log_signals'):
                         log_args.update(from_utc=window['evidence_from_utc'],to_utc=window['evidence_to_utc'])
                     item = data.read(name, hours, tournament, game_format, **log_args)
         except Exception:
@@ -119,6 +119,8 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
     # needed for that question. New investigations establish a health baseline.
     baseline = [collect('get_investigation_history')] if history else [collect(n) for n in
         ('get_schedule_compliance', 'get_machine_health', 'get_lobby_snapshot')]
+    if window and window.get('mode')=='incident' and mode=='live':
+        baseline.append(collect('get_historical_ring_target'))
     if mode == 'recorded':
         # Explicit fixture mode exercises the graph, storage and UI without pretending an LLM ran.
         builder = StateGraph(State)

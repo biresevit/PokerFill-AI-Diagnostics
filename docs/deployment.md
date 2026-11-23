@@ -6,7 +6,7 @@ The live service uses Azure App Service for Linux, one Python process and Azure 
 
 The `infra` templates describe the App Service plan, Python app, runtime settings, system-assigned identity and a container-scoped Blob Data Reader assignment. Supply existing database and diagnostic-storage resources. The SQL runtime account must be created separately by a database administrator; no administrator credential is used by the service.
 
-Apply [the history schema](../sql/001_history.sql) once. Grant the runtime account CRUD on `diagnostics.Investigation` and SELECT only on the operational tables/views required by the integration. The adapter enforces fixed SELECTs independently of those database permissions. Never grant operational writes or DDL to the runtime account.
+Apply [the history schema](../sql/001_history.sql) once. Apply [the ring schedule history view](../sql/002_ring_schedule_history.sql) and grant the diagnostics runtime principal SELECT on that view for historical ring targets. Grant the runtime account CRUD on `diagnostics.Investigation` and SELECT only on the operational tables/views required by the integration. The adapter enforces fixed SELECTs independently of those database permissions. Never grant operational writes or DDL to the runtime account.
 
 Configure these values in Azure application settings, using protected deployment parameters or Azure's settings interface:
 

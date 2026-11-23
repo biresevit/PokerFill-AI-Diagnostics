@@ -2,6 +2,7 @@
 TOOLS = {
     'get_schedule_compliance': 'Current ring/SNG/MTT targets and actual entries, pause state and weekly schedules.',
     'get_schedule_history': 'Largest actual entry drops and schedule shortfalls reconstructed over the last 1–168 hours (whole local dates). Choose game_format RING, SNG or MTT. Targets use current plans, not historic schedule edits.',
+    'get_historical_ring_target': 'Actual ring schedule in force during the incident from timestamped schedule audit snapshots. Returns target changes, including recurring schedule boundaries and live edits. Use before interpreting ring drops.',
     'get_site_constraints': 'Stake ranges, tournament exclusions, join pacing, fill window and freshness limits. Operational constraints only, no playing strategy.',
     'get_machine_health': 'Worker readiness, heartbeat and latest machine telemetry.',
     'get_lobby_snapshot': 'Latest retained lobby including stale observations, vacancies and buy-ins. Compare observation times with current time.',

@@ -4,6 +4,7 @@ import re
 import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
+from bisect import bisect_right
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
@@ -88,6 +89,8 @@ class Data:
                 result.update(timezone=site['timezone'], schedules=schedules,
                               joins_paused=bool(site.get('joins_paused')), enabled=site['enabled'])
                 result['semantics'] = 'Ring counts confirmed seats; SNG/MTT count live registration commitments. MTT targets use per-tournament plans.'
+            elif name == 'get_historical_ring_target':
+                result = historical_ring_target(db, store, s, sid, start, end)
             elif name == 'get_schedule_history':
                 zone = ZoneInfo(site['timezone'])
                 metrics = store.entry_metrics(sid, {'format':game_format,
@@ -101,7 +104,7 @@ class Data:
                 result = {'format':game_format,'timezone':site['timezone'],'from':from_utc or metrics['from'],'to':to_utc or metrics['to'],
                           'largest_drops':sorted(changes,key=lambda x:x['delta'])[:12],
                           'largest_shortfalls':sorted(points,key=lambda p:p['scheduled']-p['running'],reverse=True)[:12],
-                          'limitations':['Targets use current schedule/plans reconstructed over the selected local dates; past schedule edits are not reconstructed.',
+                          'limitations':['Use get_historical_ring_target for the ring schedule in force at the time. The scheduled values in this seat series may use the current plan.',
                               'Presence history uses retained entry timestamps and may miss observer/heartbeat interruptions.']}
             elif name == 'get_site_constraints':
                 result = {'stakes':store.stakes(sid), 'scheduler':db.one('''SELECT MaxJoinsPerTick,MinJoinGapSeconds,
@@ -232,6 +235,48 @@ class Data:
                 'customer_name':customer.get('name') if customer else None,
                 'platform': site.get('platform'), 'row_limit': 100,
                 'coverage': 'Current database state; result sets are bounded and may be truncated at 100 rows.', 'data': result}
+
+
+def historical_ring_target(db, store, scope, site_id, start, end):
+    from backoffice.store import scheduled_target
+    if hasattr(store,'historical_schedule'):
+        versions = store.historical_schedule(site_id,'RING',start,end)
+    else:
+        # Production diagnostics can read the schedule-only projection without
+        # access to audit subjects or unrelated audit payloads.
+        bounds=(start.replace(tzinfo=None),end.replace(tzinfo=None))
+        params=(scope.customer_id,site_id)
+        rows=db.rows("""SELECT AuditId, CreatedUtc, DetailJson FROM (
+                SELECT TOP(1) AuditId, CreatedUtc, DetailJson FROM backoffice.DiagnosticRingScheduleHistory
+                WHERE CustomerId=%s AND SiteId=%s AND CreatedUtc<=%s ORDER BY CreatedUtc DESC, AuditId DESC
+            ) baseline
+            UNION ALL
+            SELECT AuditId, CreatedUtc, DetailJson FROM backoffice.DiagnosticRingScheduleHistory
+            WHERE CustomerId=%s AND SiteId=%s AND CreatedUtc>%s AND CreatedUtc<=%s
+            ORDER BY CreatedUtc, AuditId""",*params,bounds[0],*params,*bounds)
+        versions=[]
+        for row in rows:
+            detail=json.loads(row['DetailJson'])
+            versions.append((row['CreatedUtc'].replace(tzinfo=timezone.utc),{
+                'timezone':detail['timezone'],'enabled':detail.get('enabled',True),
+                'windows':[dict(weekday=w['Weekday'],start_minute=w['StartMinute'],
+                                end_minute=w['EndMinute'],target=w['TargetEntries']) for w in detail['windows']]}))
+    stamps=[stamp for stamp,_ in versions]
+    candidates={start,*(stamp for stamp in stamps if start<stamp<=end)}
+    minute=start.replace(second=0,microsecond=0)+timedelta(minutes=1)
+    while minute<=end:
+        candidates.add(minute)
+        minute+=timedelta(minutes=1)
+    changes=[]
+    for stamp in sorted(candidates):
+        index=bisect_right(stamps,stamp)-1
+        target=scheduled_target(versions[index][1],stamp) if index>=0 else None
+        if not changes or target!=changes[-1]['target']:
+            changes.append(dict(at_utc=stamp.isoformat(),target=target,
+                                cause='initial' if stamp==start else 'schedule_edit' if stamp in stamps else 'weekly_schedule_boundary'))
+    return dict(from_utc=start.isoformat(),to_utc=end.isoformat(),changes=changes[:24],
+                changes_truncated=len(changes)>24,source='timestamped schedule audit snapshots',
+                limitations=['Missing audit baseline means target is unknown. Historic snapshots without an enabled flag assume scheduling was enabled.'])
 
 
 from ...tools import TOOLS

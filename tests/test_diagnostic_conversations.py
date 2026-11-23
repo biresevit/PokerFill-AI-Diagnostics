@@ -245,3 +245,26 @@ def test_incident_window_persists_with_buffer_and_reaches_agent(client, monkeypa
     assert captured == [row['window']]
     assert datetime.fromisoformat(row['window']['evidence_from_utc']) == start - timedelta(minutes=15)
     assert datetime.fromisoformat(row['window']['evidence_to_utc']) == end + timedelta(minutes=15)
+
+
+def test_historical_ring_target_changes_at_boundary_and_edit():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from pokerfill_ai.integrations.pokerfill.data import historical_ring_target
+
+    def at(hour, minute, second=0):
+        return datetime(2026, 11, 22, hour, minute, second, tzinfo=timezone.utc)
+
+    def schedule(late_target):
+        return {"timezone": "Europe/Rome", "enabled": True, "windows": [
+            {"weekday": 6, "start_minute": 1110, "end_minute": 1200, "target": 70},
+            {"weekday": 6, "start_minute": 1200, "end_minute": 1440, "target": late_target},
+        ]}
+
+    store = SimpleNamespace(historical_schedule=lambda *args: [(at(17, 0), schedule(30)), (at(19, 30, 18), schedule(100))])
+    result = historical_ring_target(None, store, None, 1006, at(18, 45), at(20, 15))
+    assert [(r["at_utc"], r["target"], r["cause"]) for r in result["changes"]] == [
+        (at(18, 45).isoformat(), 70, "initial"),
+        (at(19, 0).isoformat(), 30, "weekly_schedule_boundary"),
+        (at(19, 30, 18).isoformat(), 100, "schedule_edit"),
+    ]
