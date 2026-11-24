@@ -45,6 +45,16 @@ EVENTS = {
  'connection_reset': r'(?i)connection reset|WinError 10054',
  'out_of_memory': r'(?i)out of memory|MemoryError',
  'application_startup_exit': r'exited during startup \(exit code -?\d+\)',
+ 'network_name_unavailable': r'\bWinError 64\b',
+ 'socket_resources_exhausted': r'\bWinError 10055\b|(?i:no buffer space available)',
+ 'thread_creation_failed': r"(?i:can.t start new thread|cannot start new thread)",
+ 'event_loop_closed': r'Event loop is closed',
+ 'chat_worker_epoch_lost': r'Chat worker epoch lost',
+ 'poker_connection_closed': r'websockets\.exceptions\.ConnectionClosedError',
+ 'worker_ready': r'Cloud worker ready after reconciling \d+ prior entries',
+ 'worker_heartbeat_stall': r'Worker diagnostic event=heartbeat_stall\b',
+ 'worker_phase_started': r'Worker diagnostic event=phase_started\b',
+ 'worker_phase_finished': r'Worker diagnostic event=phase_finished\b',
 }
 STAMP = re.compile(r'^(?:\[\s*\d+\]\s*)?(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:\d{2})?)')
 ERROR_TYPES = ('WorkerFenced','TimeoutError','ConnectionError','SQLTransientConnectionError',
@@ -59,12 +69,22 @@ EVENT_MARKERS = (
     'database', '40501', '10928', '10929', 'login failed for user', 'invalid ',
     'violation of ', 'cannot insert duplicate', 'connection refused', 'actively refused',
     '10061', 'connection reset', '10054', 'out of memory', 'memoryerror', 'exited during startup',
+    'winerror 64', '10055', 'no buffer space', 'start new thread', 'event loop is closed',
+    'chat worker epoch lost', 'connectionclosederror', 'cloud worker ready',
+    'worker diagnostic',
 )
 LOG_MARKERS = tuple(code.lower() for code in (*SIGNALS, *ERROR_TYPES)) + EVENT_MARKERS
 SITE_TAG = re.compile(r'\[site (\d+)\]')
 NAMED_SITE = re.compile(r'(?:Poker site|Playing poker site) (\d+) (?:stopped|on machine|was taken off)')
 SIGNAL_PATTERNS={c:re.compile(r'(?<![A-Za-z_])'+re.escape(c)+r'(?![A-Za-z_])') for c in (*SIGNALS,*ERROR_TYPES)}
 EVENT_PATTERNS={c:re.compile(p) for c,p in EVENTS.items()}
+WORKER_PHASES=frozenset(('startup_configuration','startup_decision','startup_reconciliation','refresh','publish',
+    'claim','resource_telemetry','decision_metrics','cleanup_watchdog','cleanup_live_views','cleanup_manual',
+    'cleanup_chat','cleanup_fenced','cleanup_clients','cleanup_decision','idle'))
+AWAIT_NAMES=frozenset(('run_cloud_worker','configuration','require_hand_history','reconcile_cloud_entries',
+    'refresh','publish','to_thread','wait_for','wait','gather','acquire','sleep','close','stop_fenced',
+    'leave_unreported','run_live_views','run_manual','run_chat','request','send','recv','receive',
+    'ensure_login','login','connect','open','table','lobby','snapshot','_wait','_wait_for_data'))
 
 
 def timestamp(line):
@@ -97,7 +117,7 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
     if around is not None and around.tzinfo is None:raise ValueError("Incident time must include timezone")
     if topic not in ("all","restart","authentication","funding","connectivity"):raise ValueError("Invalid log topic")
     if len(blob)>MAX_BYTES: raise ValueError('Archive too large')
-    counts=Counter(); events=[]; ranks=[]; matched=0; coverage=[]
+    counts=Counter(); events=[]; ranks=[]; matched=0; coverage=[]; groups={}
     deadline=monotonic()+PARSE_SECONDS
     parse_limited=False
     incident_clock=around.astimezone(timezone.utc).replace(tzinfo=None) if around else None
@@ -175,7 +195,10 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                     if not near(resolved,around,window):continue
                     for code in SIGNALS:
                         counts[code]+=len(SIGNAL_PATTERNS[code].findall(line))
-                    codes=[code for code,pattern in EVENT_PATTERNS.items() if pattern.search(line)] if topic in ('all','restart') else []
+                    codes=[code for code,pattern in EVENT_PATTERNS.items() if pattern.search(line)
+                           and (topic in ('all','restart') or topic=='connectivity' and code in
+                                ('network_name_unavailable','socket_resources_exhausted','connection_reset',
+                                 'connection_refused','poker_connection_closed','database_unreachable','database_retry'))]
                     allowed=(*SIGNALS,*ERROR_TYPES) if topic=='all' else {
                         'authentication':('CREDENTIAL_EXPIRED','LOGIN_REPLACED','LOGIN_FAILED','AUTH_FAILED'),
                         'funding':('INSUFFICIENT_CHIPS','INSUFFICIENT_FUNDS'),
@@ -188,8 +211,34 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                         if resolved!=stamp:
                             event['timestamp_utc']=datetime.fromisoformat(resolved).astimezone(timezone.utc).isoformat()
                             event['clock']='collector timezone: '+str(zone)
+                        elif stamp:
+                            try:
+                                value=datetime.fromisoformat(stamp.replace(',','.').replace('Z','+00:00'))
+                                if value.tzinfo is not None:event['timestamp_utc']=value.astimezone(timezone.utc).isoformat()
+                            except ValueError:pass
                         if code=='application_startup_exit':
                             event['exit_code']=int(re.search(r'exit code (-?\d+)',line).group(1))
+                        if code=='heartbeat_timeout':
+                            event['seconds_without_heartbeat']=int(re.search(r'No heartbeat reached the database for (\d+)',line).group(1))
+                        if code in ('worker_heartbeat_stall','worker_phase_started','worker_phase_finished'):
+                            phase_match=re.search(r'\bphase=([a-z_]{1,40})\b',line)
+                            if phase_match and phase_match.group(1) in WORKER_PHASES:event['phase']=phase_match.group(1)
+                            for field in ('phase_age_seconds','heartbeat_age_seconds','event_loop_lag_seconds','elapsed_seconds'):
+                                value=re.search(r'\b'+field+r'=(\d{1,8}(?:\.\d{1,3})?)(?:\s|$)',line)
+                                if value:event[field]=float(value.group(1))
+                            value=re.search(r'\bawaiting=([A-Za-z_,]{1,256})(?:\s|$)',line)
+                            if value:event['awaiting']=[name for name in value.group(1).split(',')[:8] if name in AWAIT_NAMES]
+                            value=re.search(r'\boutcome=(ok|interrupted)(?:\s|$)',line)
+                            if value:event['outcome']=value.group(1)
+                        # Keep first/last observations even when repeated exceptions fill the
+                        # 24-event detail budget. Never retain arbitrary messages or stack text.
+                        key=(code,source,event['site_attribution'],event['clock'])
+                        group=groups.setdefault(key,{'code':code,'source':source,'site_attribution':event['site_attribution'],
+                            'count':0,'first_event':event,'last_event':event})
+                        group['count']+=1
+                        def ordering(item):return item.get('timestamp_utc') or item.get('timestamp_reported') or ''
+                        if ordering(event)<ordering(group['first_event']):group['first_event']=event
+                        if ordering(event)>ordering(group['last_event']):group['last_event']=event
                         matched+=1
                         priority=rank(event)
                         position=bisect_right(ranks,priority)
@@ -204,8 +253,10 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                 'truncated':meta.get('truncated') if isinstance(meta.get('truncated'),bool) else 'unknown','original_bytes':meta.get('original_bytes') if isinstance(meta.get('original_bytes'),int) else None})
             files+=1
             if parse_limited:break
+    grouped=sorted(groups.values(),key=lambda group:rank(group['first_event']))
     return {'machine_id':machine_id,'captured_utc':timestamp(str(manifest.get('captured_utc',''))), 'signals':{k:v for k,v in counts.items() if v}, 'files_scanned':files,
             'events':events,'matched_events':matched,'events_truncated':matched>24,'file_coverage':coverage[:24],
+            'event_groups':grouped[:24],'event_groups_truncated':len(grouped)>24,
             'coverage_truncated':len(coverage)>24 or parse_limited,'scan_time_limit_reached':parse_limited,
             'collection_omissions':dict(Counter('budget_exhausted' if f.get('skipped')=='Uncompressed collection budget exhausted' else 'file_unavailable' for f in manifest.get('files',[]) if f.get('skipped'))),
             'topic':topic,'requested_around_utc':None if window else around_utc or None,
@@ -215,6 +266,7 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                 *(['Archive parsing reached its time limit; only the scanned portion is represented.'] if parse_limited else []),
                 *(['Unverified local timestamps and undated lines may fall outside the requested interval.'] if window else []),
                 'Signals may repeat one incident. A zero count does not establish absence.',
+                'Event groups preserve first/last matches in scanned content, not process uptime or proof of continuous failure. Later ownership errors may be consequences of an earlier heartbeat lapse.',
                 'Raw lines, account identities, secrets and hand data are never returned.']}
 
 

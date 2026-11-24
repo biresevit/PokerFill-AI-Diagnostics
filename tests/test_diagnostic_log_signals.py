@@ -173,3 +173,64 @@ def test_explicit_log_window_excludes_known_outside_timestamps():
     result = summarize(out.getvalue(), 1006, 5, from_utc='2026-11-22T19:00:00Z', to_utc='2026-11-22T20:00:00Z')
     assert result['signals']['CREDENTIAL_EXPIRED'] == 1
     assert result['events'][0]['timestamp_utc'] == '2026-11-22T19:00:00+00:00'
+
+
+def test_network_failure_watchdog_and_later_epoch_loss_remain_distinguishable():
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('manifest.json',json.dumps(dict(site_id=1006,machine_id=5,iana_time_zone='Europe/Berlin')))
+        z.writestr('controller/run/worker.log',
+            '2026-11-23 20:07:54,000 ERROR [site 1006] socket failed\n'
+            'OSError: [WinError 64] private-account password=hidden\n'
+            '2026-11-23 20:07:55,000 ERROR [site 999] [WinError 10055] secret-other-site\n'
+            '2026-11-23 20:09:48,811 ERROR [site 1006] No heartbeat reached the database for 125 s; stopping\n'+
+            ''.join(f'2026-11-23 20:11:{i%60:02},000 ERROR [site 1006] Chat synchronization failed\n'
+                    'RuntimeError: Chat worker epoch lost secret-account\n' for i in range(100)))
+    result=summarize(out.getvalue(),1006,5,around_utc='2026-11-23T19:08:43Z',topic='restart',
+                     from_utc='2026-11-23T19:00:00Z',to_utc='2026-11-23T19:30:00Z')
+    groups={g['code']:g for g in result['event_groups']}
+    assert groups['network_name_unavailable']['first_event']['timestamp_utc']=='2026-11-23T19:07:54+00:00'
+    assert groups['heartbeat_timeout']['first_event']['seconds_without_heartbeat']==125
+    assert groups['chat_worker_epoch_lost']['count']==100
+    assert groups['chat_worker_epoch_lost']['first_event']['timestamp_utc']=='2026-11-23T19:11:00+00:00'
+    assert groups['chat_worker_epoch_lost']['last_event']['timestamp_utc']=='2026-11-23T19:11:59+00:00'
+    assert result['events_truncated']
+    assert 'socket_resources_exhausted' not in groups
+    for secret in ('private-account','password=','hidden','secret-account','secret-other-site'):
+        assert secret not in json.dumps(result)
+
+
+def test_connectivity_recognizes_network_error_and_preserves_explicit_utc():
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('manifest.json',json.dumps(dict(site_id=1006,machine_id=5)))
+        z.writestr('controller/run/worker.log',
+                   '2026-11-23T19:07:54Z ERROR [site 1006] [WinError 64] private\n')
+    result=summarize(out.getvalue(),1006,5,topic='connectivity')
+    event=result['events'][0]
+    assert event['code']=='network_name_unavailable'
+    assert event['timestamp_utc']=='2026-11-23T19:07:54+00:00'
+    assert event['clock']=='offset_in_timestamp'
+
+
+def test_worker_progress_exposes_only_fixed_phase_and_await_names():
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('manifest.json',json.dumps(dict(site_id=1006,machine_id=5)))
+        z.writestr('controller/run/worker.log',
+            '2026-11-23T19:09:48Z ERROR [site 1006] Worker diagnostic event=heartbeat_stall '
+            'phase=publish phase_age_seconds=121.500 heartbeat_age_seconds=124.000 '
+            'event_loop_lag_seconds=0.015 awaiting=run_cloud_worker,publish,to_thread,private_account password=do-not-leak-this\n'
+            '2026-11-23T19:09:49Z INFO [site 1006] Worker diagnostic event=phase_started phase=cleanup_live_views\n'
+            '2026-11-23T19:09:50Z INFO [site 1006] Worker diagnostic event=phase_finished '
+            'phase=cleanup_live_views elapsed_seconds=1.000 outcome=ok\n')
+    result=summarize(out.getvalue(),1006,5,topic='restart')
+    events={e['code']:e for e in result['events']}
+    stall=events['worker_heartbeat_stall']
+    assert stall['phase']=='publish'
+    assert stall['phase_age_seconds']==121.5 and stall['heartbeat_age_seconds']==124
+    assert stall['event_loop_lag_seconds']==.015
+    assert stall['awaiting']==['run_cloud_worker','publish','to_thread']
+    assert events['worker_phase_started']['phase']=='cleanup_live_views'
+    assert events['worker_phase_finished']['outcome']=='ok'
+    assert 'do-not-leak-this' not in json.dumps(result) and 'private_account' not in json.dumps(result)

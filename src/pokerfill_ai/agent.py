@@ -63,6 +63,19 @@ when only part of a longer conversation is included; never pretend to recall omi
 Every finding must cite evidence IDs from tools; never invent IDs, balances, events or causes.
 Do not disclose account names, personal data, secrets, or strategy settings. State evidence gaps.
 For worker_restarted, inspect get_worker_log_signals with topic restart and the affected machine/time.
+For missing worker heartbeats or machine_offline, inspect the same logs even without worker_restarted.
+Compare the last successful heartbeat, pre-timeout errors, watchdog event, offline cleanup and any
+subsequent worker_ready/start/restart events. Use event_groups for first/last occurrences when
+repeated errors truncate the detailed events; results remain bounded by the form's evidence window.
+WinError 64 establishes a lost Windows network connection, not that all networking or SQL failed.
+A heartbeat watchdog is a response to missing publishes, not the initiating cause. Later chat_worker_epoch_lost
+may follow scheduler fencing; do not call it the cause when it starts after the heartbeat lapse.
+Keep worker/site-task health separate from updater/process/PC health. A live updater can coexist with a
+stalled worker. Absence of a restart event in bounded logs does not prove no restart occurred.
+When worker_heartbeat_stall is available, report its phase, phase age, heartbeat age, event-loop lag
+and allowlisted awaiting chain. Compare cleanup phase_started and phase_finished events, but missing
+completion in bounded coverage alone does not prove a hang. Older workers lack these progress records;
+do not invent the blocked operation from a generic heartbeat timeout or an exception in another task.
 The command cancellation does not explain the restart trigger. Distinguish a site task restart,
 managed process restart, deployment and machine reboot. Do not infer a reboot from application startup.
 Check collection status and file coverage: archives captured before the incident cannot explain it.

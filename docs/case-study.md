@@ -32,3 +32,5 @@ The next-day updater heartbeat was fresh while the worker heartbeat remained sta
 The assistant connects a historical symptom with independent health and command evidence, checks the schedule in force at the time, and keeps probability separate from proof. The follow-up preserves context while explaining what the evidence cannot establish. No code changes, worker restarts or account actions are performed by the agent.
 
 The public answer is an edited, anonymized reconstruction, not an exact transcript or an unrestricted live agent response. Other demo scenarios remain synthetic. Private verification exports are excluded from Git and deployment packages.
+
+A subsequent archive provides a stronger connection-failure lead and an explicit watchdog event. See the [worker diagnosis follow-up](worker-diagnostics.md#follow-up-on-the-featured-november-incident) for the new evidence and its limits; the initiating cause and exact blocked operation remain unconfirmed.
