@@ -2,7 +2,7 @@ import {installDiagnostics} from './diagnostics-ui.js';
 
 // Public demo: all prompts, prepared responses and history stay in this browser.
 // No request is made to the live investigation API and no model key is present.
-const storageKey='pokerfill-ai-synthetic-v1';
+const storageKey='pokerfill-ai-case-study-v2';
 const $=selector=>document.querySelector(selector);
 const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let turns=[];
@@ -14,7 +14,32 @@ const finding=(title,explanation,certainty,evidence_ids)=>({title,explanation,ce
 
 function sample(prompt,parent){
  const lower=prompt.toLowerCase();let report,items;
- if(lower.includes('restart')||lower.includes('worker 212')){
+ const incident=lower.includes('23 november')||lower.includes('20:09')||
+  (parent?.result?.case_study==='heartbeat-lapse'&&!/balance|fund|unobserved|mtt|sng/.test(lower));
+ if(incident){
+  const recorded=(id,source,data)=>({...evidence(id,source,data),captured_utc:'2026-11-24T09:34:36Z',
+   coverage:'Prepared, anonymized extract of a verified historical investigation; not a live observation',data});
+  items=[recorded('E1','get_schedule_history',{timezone:'Europe/Rome',format:'RING',
+   at_utc:'2026-11-23T19:08:43Z',recorded_counts:[86,73,62,58,54],
+   semantics:'Reconstructed confirmed-seat reporting; not a continuous poker-client recording'}),
+   recorded('E2','get_historical_ring_target',{target_during_drop:100,next_target:140,next_change_utc:'2026-11-23T19:30:00Z',source:'Timestamped schedule audit snapshots'}),
+   recorded('E3','get_machine_health',{worker:'Worker A',last_worker_heartbeat_utc:'2026-11-23T19:07:43.900Z',heartbeat_timeout_seconds:60,
+    worker_ready_at_investigation:false,updater_reporting_next_day:true}),
+   recorded('E4','get_incident_timeline',{worker:'Worker A',expired_commands:[{kind:'join',reason:'machine_offline'},{kind:'leave',reason:'machine_offline'}],
+    command_expiry_utc:'2026-11-23T19:11:00.494Z',sessions_closed:34,session_end_reason:'machine_offline',session_end_utc:'2026-11-23T19:10:43.900Z'})];
+  report=parent?{
+   summary:'Worker A was offline from the scheduler\'s perspective. That does not prove the entire PC shut down, and the available evidence does not explain why its worker heartbeat stopped.',
+   findings:[finding('Worker unavailability is supported','The worker stopped publishing heartbeats. The scheduler subsequently expired a join and a leave command as machine_offline and closed 34 sessions.','confirmed',['E3','E4']),
+    finding('A PC shutdown or restart is not established','The updater was reporting the next day while the worker heartbeat remained stale. That later observation cannot establish PC connectivity during the incident. No incident-time log coverage here establishes a reboot, process crash, restart or network failure.','unknown',['E3','E4'])],
+   limitations:['The earlier diagnosis remains context. This prepared follow-up explains the verified records without adding a newly observed root cause. Incident-time worker, updater and OS logs would be needed to distinguish the possible causes.']
+  }:{
+   summary:'The reported ring-seat count most likely fell because Worker A stopped reporting around 20:09 Rome time on 23 November. The heartbeat timeout aligns with the drop, while the scheduled target stayed at 100. Why the worker stopped reporting remains unknown.',
+   findings:[finding('The recorded count fell without a schedule change','At 20:08:43 CET, retained history shows 86 → 73 → 62 → 58 → 54 confirmed seats. The target stayed at 100; its next change was at 20:30 CET. The reported low of about 56 was approximate.','confirmed',['E1','E2']),
+    finding('Worker A became unavailable to the scheduler','Its last worker heartbeat was 20:07:43.900 CET. The 60-second freshness deadline aligns within one second of the drop. A join and a leave later expired as machine_offline, and 34 sessions were closed. This strongly supports a reporting outage as the explanation for the chart drop.','probable',['E1','E3','E4']),
+    finding('The initiating cause is still unknown','A missing worker heartbeat does not establish a PC shutdown, deployment, worker restart or network failure. Those causes require logs covering the incident.','unknown',['E3','E4'])],
+   limitations:['Seat history is reconstructed from retained observations. The number of seats that actually disconnected is not established by the reporting drop.','The 60-second reporting deadline and the later three-minute offline session cleanup are separate events.']};
+  return {report,evidence:items,case_study:'heartbeat-lapse',mode:'recorded',usage:{total_tokens:0},history_context:{included_turns:parent?1:0,previous_turns:parent?1:0}};
+ }else if(lower.includes('restart')||lower.includes('worker 212')){
   items=[evidence('E1','get_worker_log_signals',{machine_id:212,collector_time_zone:'Europe/Budapest',
    events:[{timestamp_utc:'2026-11-19T19:02:02Z',code:'heartbeat_timeout',seconds_without_publish:120},
    {timestamp_utc:'2026-11-19T19:02:07Z',code:'worker_site_restart'}],coverage:'Complete sample log covers the requested incident'}),
@@ -75,7 +100,7 @@ async function siteApi(path,method='GET',payload){
  return {...t,conversation:turns.filter(x=>x.root_id===t.root_id),max_turns:20};
 }
 
-if(!turns.length)addTurn({request_id:crypto.randomUUID(),prompt:'Why are fewer ring entries running than scheduled?'});
+if(!turns.length)addTurn({request_id:crypto.randomUUID(),prompt:'On 23 November around 20:09, ring entries fell from 86 to about 56. Why did it happen?'});
 const state={generation:1},pages={};
 function render(gen,description,html){if(gen!==state.generation)return false;$('#page-description').textContent=description;$('#app').innerHTML=html;return true;}
 installDiagnostics({$,esc,state,pages,render,siteApi});

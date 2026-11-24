@@ -41,7 +41,15 @@ The agent has read-only access for ring, SNG, and MTT investigations. An authent
 
 ## Sample investigations
 
-The public demo and screenshots use **synthetic fixtures and prepared responses**. They demonstrate the interface and evidence format; they are not live customer incidents, model benchmarks or unrestricted access to the production agent. Live investigations run through the authenticated Backoffice.
+The public demo opens with an **anonymized replay of a verified historical incident**, using prepared responses. Historical heartbeat, command, session and seat records were checked before publication. Customer and site identities are omitted, and the machine is labelled **Worker A**. Other scenarios use synthetic fixtures. This is not a live connection or a model benchmark; live investigations run through the authenticated Backoffice. See the [case study and verification limits](docs/case-study.md).
+
+### Featured investigation: a sudden ring-entry drop
+
+> **Question:** On 23 November around 20:09, ring entries fell from 86 to about 56. Why did it happen?
+>
+> **Diagnosis:** The reported count most likely fell because Worker A stopped reporting. Its 60-second heartbeat deadline aligns with the drop, while the scheduled target stayed at 100. Subsequent `machine_offline` command expiries and session closures support worker unavailability. The initiating cause remains unknown.
+
+The verified history continues **86 → 73 → 62 → 58 → 54**; the original answer mentioned only the first part. The replay corrects that omission and distinguishes a reporting outage from a proven loss of actual poker seats. A follow-up asks whether the whole PC was offline: worker unavailability is supported, but a PC shutdown or restart is not established.
 
 | User prompt | Illustrative diagnosis |
 |---|---|
@@ -96,7 +104,7 @@ python -m pip install -e .
 python scripts/run_demo.py
 ```
 
-Open **http://127.0.0.1:8000/demo**. This command uses synthetic browser data, disables model access and does not connect to customer databases. The demo can be explored without an OpenAI account.
+Open **http://127.0.0.1:8000/demo**. This command uses prepared browser fixtures, disables model access and does not connect to customer databases. The demo can be explored without an OpenAI account.
 
 For the real integration, install the pinned domain helpers with `python scripts/vendor_backoffice.py`, configure the server settings in [.env.example](.env.example), and use an authenticated broker. No customer data, credentials or investigation history are included in this repository.
 

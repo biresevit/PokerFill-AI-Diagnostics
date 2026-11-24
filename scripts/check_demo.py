@@ -1,4 +1,4 @@
-"""Exercise the synthetic UI and capture reproducible screenshots without model calls."""
+"""Exercise prepared demo scenarios and capture screenshots without model calls."""
 import argparse
 import os
 from pathlib import Path
@@ -39,13 +39,15 @@ with tempfile.TemporaryDirectory() as temporary:
             page.on('request',lambda request:api_requests.append(request.url) if any(p in request.url for p in ('/investigations','/history','/api/')) else None)
             page.goto(base+'/demo',wait_until='networkidle')
             page.locator('.diagnosis-summary').wait_for()
-            assert 'stale lobby' in page.locator('.diagnosis-summary').inner_text().lower()
+            assert 'Worker A stopped reporting' in page.locator('.diagnosis-summary').inner_text()
+            assert '86 → 73 → 62 → 58 → 54' in page.locator('#diagnosis-answer').inner_text()
+            assert 'Verified incident, anonymized replay' in page.locator('.demo-notice').inner_text()
             assert page.locator('.diagnosis-turn').count()==1
             page.screenshot(path=str(args.output/'investigation-desktop.png'),full_page=True)
-            page.fill('#diagnosis-prompt','Could low balances explain this too?')
+            page.fill('#diagnosis-prompt','Was the whole PC offline, and why did the worker stop reporting?')
             page.locator('#diagnosis-form').evaluate('(form)=>form.requestSubmit()')
             page.locator('.diagnosis-turn').nth(1).wait_for()
-            assert 'Unknown funds are not the same' in page.locator('.diagnosis-summary').last.inner_text()
+            assert 'does not prove the entire PC shut down' in page.locator('.diagnosis-summary').last.inner_text()
             page.locator('.diagnosis-turn').last.locator('details').first.click()
             page.screenshot(path=str(args.output/'follow-up-desktop.png'),full_page=True)
             page.reload(wait_until='networkidle');page.locator('.diagnosis-turn').nth(1).wait_for()
@@ -53,6 +55,10 @@ with tempfile.TemporaryDirectory() as temporary:
             page.set_viewport_size({'width':390,'height':844})
             page.screenshot(path=str(args.output/'follow-up-mobile.png'),full_page=True)
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth'), 'Mobile overflow'
+            page.fill('#diagnosis-prompt','Could low balances explain this too?')
+            page.locator('#diagnosis-form').evaluate('(form)=>form.requestSubmit()')
+            page.locator('.diagnosis-turn').nth(2).wait_for()
+            assert 'Unknown funds are not the same' in page.locator('.diagnosis-summary').last.inner_text()
             page.click('#sample-restart');page.locator('.diagnosis-turn').filter(has_text='Worker 212').wait_for()
             assert 'heartbeat timeout' in page.locator('.diagnosis-summary').last.inner_text()
             page.click('#diagnosis-new');page.fill('#diagnosis-prompt','Why fewer entries? <img src=x onerror=alert(1)>')

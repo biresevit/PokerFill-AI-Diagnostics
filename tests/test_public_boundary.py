@@ -10,7 +10,7 @@ def test_public_demo_never_embeds_server_authentication(tmp_path,monkeypatch):
         page=client.get('/demo')
         assert page.status_code==200
         assert service.TOKEN not in page.text
-        assert 'Synthetic examples' in page.text
+        assert 'Verified incident, anonymized replay' in page.text
         assert "frame-ancestors 'none'" in page.headers['content-security-policy']
         assert client.get('/health').json()['status']=='ready'
 
