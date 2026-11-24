@@ -232,7 +232,7 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                             if value:event['outcome']=value.group(1)
                         # Keep first/last observations even when repeated exceptions fill the
                         # 24-event detail budget. Never retain arbitrary messages or stack text.
-                        key=(code,source,event['site_attribution'],event['clock'])
+                        key=(code,source,event['site_attribution'],event['clock'],event.get('phase'))
                         group=groups.setdefault(key,{'code':code,'source':source,'site_attribution':event['site_attribution'],
                             'count':0,'first_event':event,'last_event':event})
                         group['count']+=1
@@ -254,9 +254,23 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
             files+=1
             if parse_limited:break
     grouped=sorted(groups.values(),key=lambda group:rank(group['first_event']))
+    summaries=[]
+    for group in grouped[:16]:
+        first,last=group['first_event'],group['last_event']
+        summary={k:v for k,v in group.items() if k not in ('first_event','last_event')}
+        summary.update(clock=first['clock'],first_reported=first['timestamp_reported'],last_reported=last['timestamp_reported'])
+        if first.get('timestamp_utc'):summary['first_utc']=first['timestamp_utc']
+        if last.get('timestamp_utc'):summary['last_utc']=last['timestamp_utc']
+        if first.get('phase'):summary['phase']=first['phase']
+        fields=('seconds_without_heartbeat','phase_age_seconds','heartbeat_age_seconds',
+                'event_loop_lag_seconds','elapsed_seconds','awaiting','outcome','exit_code')
+        for label,event in (('first_details',first),('last_details',last)):
+            details={key:event[key] for key in fields if key in event}
+            if details:summary[label]=details
+        summaries.append(summary)
     return {'machine_id':machine_id,'captured_utc':timestamp(str(manifest.get('captured_utc',''))), 'signals':{k:v for k,v in counts.items() if v}, 'files_scanned':files,
             'events':events,'matched_events':matched,'events_truncated':matched>24,'file_coverage':coverage[:24],
-            'event_groups':grouped[:24],'event_groups_truncated':len(grouped)>24,
+            'event_groups':summaries,'event_groups_truncated':len(grouped)>16,
             'coverage_truncated':len(coverage)>24 or parse_limited,'scan_time_limit_reached':parse_limited,
             'collection_omissions':dict(Counter('budget_exhausted' if f.get('skipped')=='Uncompressed collection budget exhausted' else 'file_unavailable' for f in manifest.get('files',[]) if f.get('skipped'))),
             'topic':topic,'requested_around_utc':None if window else around_utc or None,

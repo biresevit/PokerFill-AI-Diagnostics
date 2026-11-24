@@ -189,11 +189,11 @@ def test_network_failure_watchdog_and_later_epoch_loss_remain_distinguishable():
     result=summarize(out.getvalue(),1006,5,around_utc='2026-11-23T19:08:43Z',topic='restart',
                      from_utc='2026-11-23T19:00:00Z',to_utc='2026-11-23T19:30:00Z')
     groups={g['code']:g for g in result['event_groups']}
-    assert groups['network_name_unavailable']['first_event']['timestamp_utc']=='2026-11-23T19:07:54+00:00'
-    assert groups['heartbeat_timeout']['first_event']['seconds_without_heartbeat']==125
+    assert groups['network_name_unavailable']['first_utc']=='2026-11-23T19:07:54+00:00'
+    assert groups['heartbeat_timeout']['first_details']['seconds_without_heartbeat']==125
     assert groups['chat_worker_epoch_lost']['count']==100
-    assert groups['chat_worker_epoch_lost']['first_event']['timestamp_utc']=='2026-11-23T19:11:00+00:00'
-    assert groups['chat_worker_epoch_lost']['last_event']['timestamp_utc']=='2026-11-23T19:11:59+00:00'
+    assert groups['chat_worker_epoch_lost']['first_utc']=='2026-11-23T19:11:00+00:00'
+    assert groups['chat_worker_epoch_lost']['last_utc']=='2026-11-23T19:11:59+00:00'
     assert result['events_truncated']
     assert 'socket_resources_exhausted' not in groups
     for secret in ('private-account','password=','hidden','secret-account','secret-other-site'):
@@ -233,4 +233,5 @@ def test_worker_progress_exposes_only_fixed_phase_and_await_names():
     assert stall['awaiting']==['run_cloud_worker','publish','to_thread']
     assert events['worker_phase_started']['phase']=='cleanup_live_views'
     assert events['worker_phase_finished']['outcome']=='ok'
+    assert next(g for g in result['event_groups'] if g['code']=='worker_phase_started')['phase']=='cleanup_live_views'
     assert 'do-not-leak-this' not in json.dumps(result) and 'private_account' not in json.dumps(result)
