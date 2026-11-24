@@ -145,7 +145,10 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
             if isinstance(name,str) and len(name)<=80 and re.fullmatch(r'[A-Za-z0-9_+/-]+',name):zone=ZoneInfo(name)
         except (ZoneInfoNotFoundError,ValueError):pass
         files=0
-        for file_number,i in enumerate(entries):
+        indexed=list(enumerate(entries))
+        if topic in ('restart','connectivity'):
+            indexed.sort(key=lambda pair:{'controller':0,'worker':0,'updater':1,'pdecision':2}.get(pair[1].filename.split('/')[0].lower(),3))
+        for file_number,i in indexed:
             # Only known application log roots; raw lines/hand data never leave this parser.
             if not i.filename.lower().startswith(('controller/','worker/','updater/','pdecision/')) or not re.search(r'\.log(?:[.\d-].*)?$',i.filename.lower()):
                 continue

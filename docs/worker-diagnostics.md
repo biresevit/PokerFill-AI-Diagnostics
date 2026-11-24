@@ -10,6 +10,10 @@ A missing heartbeat is a symptom. A useful diagnosis follows the sequence rather
 
 The parser recognizes fixed operational templates including Windows network-name loss (`WinError 64`), socket resource exhaustion, thread creation failure, closed event loops, worker readiness and lost chat ownership. It never returns arbitrary exception messages, account names, raw stack traces or local paths.
 
+Restart and connectivity scans prioritize controller logs before updater and decision-engine logs, preserving original archive file indices. If parsing reaches its time budget, the output explicitly reports incomplete coverage.
+
+The model receives a dedicated compact worker view containing the first/last classified failures, watchdog details and coverage flags. This fixes a context-compaction failure where useful retained events could be replaced with an unavailable marker because a generic projection exceeded the per-item token budget. Full bounded evidence remains available with its original evidence ID.
+
 ## Progress evidence for the next worker release
 
 The companion [ScheduleController worker instrumentation](https://github.com/biresevit/ScheduleController/blob/main/schedule_controller/worker_diagnostics.py) records the active operation when the heartbeat watchdog fires:

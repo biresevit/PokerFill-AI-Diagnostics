@@ -235,3 +235,19 @@ def test_worker_progress_exposes_only_fixed_phase_and_await_names():
     assert events['worker_phase_finished']['outcome']=='ok'
     assert next(g for g in result['event_groups'] if g['code']=='worker_phase_started')['phase']=='cleanup_live_views'
     assert 'do-not-leak-this' not in json.dumps(result) and 'private_account' not in json.dumps(result)
+
+
+def test_restart_scan_prioritizes_worker_before_other_logs_when_time_runs_out(monkeypatch):
+    from pokerfill_ai.integrations.pokerfill import log_signals
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('manifest.json',json.dumps(dict(site_id=1006,machine_id=5)))
+        z.writestr('updater/updater.log','2026-11-23T19:00:00Z ordinary updater line\n')
+        z.writestr('controller/run/worker.log','2026-11-23T19:07:54Z [site 1006] OSError: [WinError 64]\n')
+    times=iter([0,1,log_signals.PARSE_SECONDS+1])
+    monkeypatch.setattr(log_signals,'monotonic',lambda:next(times))
+    result=summarize(out.getvalue(),1006,5,topic='restart')
+    assert result['scan_time_limit_reached']
+    assert result['file_coverage'][0]['source']=='controller'
+    event=next(e for e in result['events'] if e['code']=='network_name_unavailable')
+    assert event['file_index']==2  # original ZIP index is preserved despite scan ordering

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .data import TOOLS
 from .trace import stage
+from .model_context import model_evidence
 
 
 class Arguments(BaseModel):
@@ -173,23 +174,6 @@ def investigate(prompt, data, *, mode='live', model=None, history=None, history_
             raise RuntimeError('Investigation token budget reached')
 
     estimated_tokens = 0
-    def model_evidence(item):
-        import tiktoken
-        encoding=tiktoken.get_encoding('o200k_base')
-        def trim(value, count, chars):
-            if isinstance(value, dict):return {key:trim(v,count,chars) for key,v in value.items()}
-            if isinstance(value, list):return [trim(v,count,chars) for v in value[:count]]
-            return value[:chars] if isinstance(value,str) else value
-        for count,chars in ((24,400),(8,240),(3,120)):
-            candidate=trim(item,count,chars)
-            if candidate != item:
-                candidate['model_view_compacted'] = True
-            serialized = json.dumps(candidate,default=str,ensure_ascii=False,separators=(',',':'))
-            if len(encoding.encode(serialized,disallowed_special=())) <= 900:
-                return candidate
-        return {'id':item.get('id'),'source':item.get('source'),
-                'data':{'available':False,'reason':'Evidence was too large for model context; full bounded evidence is retained.'}}
-
     def reserve(messages):
         nonlocal estimated_tokens
         if time.monotonic()>deadline:
