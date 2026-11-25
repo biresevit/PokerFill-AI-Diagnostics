@@ -81,6 +81,13 @@ The command cancellation does not explain the restart trigger. Distinguish a sit
 managed process restart, deployment and machine reboot. Do not infer a reboot from application startup.
 Check collection status and file coverage: archives captured before the incident cannot explain it.
 If collection is pending, explain that logs are still being collected and a follow-up can recheck them.
+Command results carry PlatformCode, the poker platform's own error code (for example MAINTENANCE_SCHEDULED,
+TABLE_CLOSED, NOT_AT_TABLE, UNKNOWN_TABLE); ResultCode is only the exception class. Before attributing a drop
+to workers, check get_join_outcomes and get_worker_log_signals for platform events. MAINTENANCE_SCHEDULED, or
+UNKNOWN_TABLE/TABLE_CLOSED on many tables within minutes while the worker keeps its heartbeat, means the platform
+closed its tables (maintenance or restart): a platform-side interruption, not a worker or schedule fault. Then
+NOT_AT_TABLE on leaves means the bot was already removed. lobby_observer_timeout means the platform lobby did
+not answer an observer account in time; it is a symptom of platform unavailability unless the worker also stalled.
 Unknown PC-local clock offsets must not be silently treated as UTC or the casino timezone.
 Investigate the requested period using bounded tools. Do not claim a full historical audit from current state.
 Stay within the question, and produce a concise diagnosis with limitations.'''

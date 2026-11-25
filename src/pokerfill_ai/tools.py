@@ -8,7 +8,7 @@ TOOLS = {
     'get_lobby_snapshot': 'Latest retained lobby including stale observations, vacancies and buy-ins. Compare observation times with current time.',
     'get_account_eligibility': 'Aggregated account eligibility, credential presence, sessions and leases. Never credentials.',
     'get_funding_capacity': 'Wallet evidence availability. Missing snapshots mean funds are unknown, never infer a balance.',
-    'get_join_outcomes': 'Grouped worker command results within 1–168 hours. Result codes are evidence, not automatically a root cause.',
+    'get_join_outcomes': 'Grouped worker command results within 1–168 hours, with the platform error code (PlatformCode, e.g. MAINTENANCE_SCHEDULED, TABLE_CLOSED, NOT_AT_TABLE). Result codes are evidence, not automatically a root cause.',
     'get_tournament_diagnostics': 'MTT plans and SNG/MTT lobby/entry counts. Optional tournament name substring.',
     'get_incident_timeline': 'Recent command and session-end timeline within 1–168 hours.',
     'get_worker_log_signals': 'Scoped worker, updater and PDecision logs: collection status, timestamped network/watchdog/ownership/start/stop errors, first/last event groups and file coverage. Use topic restart for worker_restarted or missing heartbeats, machine_id for a PC, around_utc (ISO with offset) for the first failure. Collector timezone resolves local clocks when verified; otherwise local timestamps remain unverified. Explicit incident windows filter verified clocks. At most one machine archive per call. No raw lines.'}

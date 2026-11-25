@@ -21,6 +21,11 @@ PARSE_SECONDS = 25
 EVENTS = {
  'worker_site_restart': r'Poker site \d+ stopped \(',
  'table_closed_response': r'\bTABLE_CLOSED\b',
+ 'platform_maintenance': r'\bMAINTENANCE_SCHEDULED\b',
+ 'platform_unknown_table': r'\bUNKNOWN_TABLE\b',
+ 'platform_not_at_table': r'\bNOT_AT_TABLE\b',
+ 'lobby_observer_timeout': r'Lobby observer failed for \S+: TimeoutError',
+ 'lobby_scan_skipped': r'Lobby scan skipped this round',
  'worker_started': r'Playing poker site \d+ on machine \d+',
  'heartbeat_timeout': r'No heartbeat reached the database for \d+',
  'database_retry': r'Temporary SQL failure',
@@ -71,8 +76,11 @@ EVENT_MARKERS = (
     '10061', 'connection reset', '10054', 'out of memory', 'memoryerror', 'exited during startup',
     'winerror 64', '10055', 'no buffer space', 'start new thread', 'event loop is closed',
     'chat worker epoch lost', 'connectionclosederror', 'cloud worker ready',
-    'worker diagnostic',
+    'worker diagnostic', 'maintenance_scheduled', 'unknown_table', 'not_at_table',
+    'lobby observer failed', 'lobby scan skipped',
 )
+PLATFORM_EVENTS=('table_closed_response','platform_maintenance','platform_unknown_table','platform_not_at_table',
+                 'lobby_observer_timeout','lobby_scan_skipped')
 LOG_MARKERS = tuple(code.lower() for code in (*SIGNALS, *ERROR_TYPES)) + EVENT_MARKERS
 SITE_TAG = re.compile(r'\[site (\d+)\]')
 NAMED_SITE = re.compile(r'(?:Poker site|Playing poker site) (\d+) (?:stopped|on machine|was taken off)')
@@ -201,7 +209,8 @@ def summarize(blob, site_id, machine_id, *, around_utc="", topic="all", archive_
                     codes=[code for code,pattern in EVENT_PATTERNS.items() if pattern.search(line)
                            and (topic in ('all','restart') or topic=='connectivity' and code in
                                 ('network_name_unavailable','socket_resources_exhausted','connection_reset',
-                                 'connection_refused','poker_connection_closed','database_unreachable','database_retry'))]
+                                 'connection_refused','poker_connection_closed','database_unreachable','database_retry',
+                                 *PLATFORM_EVENTS))]
                     allowed=(*SIGNALS,*ERROR_TYPES) if topic=='all' else {
                         'authentication':('CREDENTIAL_EXPIRED','LOGIN_REPLACED','LOGIN_FAILED','AUTH_FAILED'),
                         'funding':('INSUFFICIENT_CHIPS','INSUFFICIENT_FUNDS'),

@@ -251,3 +251,21 @@ def test_restart_scan_prioritizes_worker_before_other_logs_when_time_runs_out(mo
     assert result['file_coverage'][0]['source']=='controller'
     event=next(e for e in result['events'] if e['code']=='network_name_unavailable')
     assert event['file_index']==2  # original ZIP index is preserved despite scan ordering
+
+
+def test_platform_maintenance_and_lobby_timeouts_are_named_events():
+    out=io.BytesIO()
+    with zipfile.ZipFile(out,'w') as z:
+        z.writestr('manifest.json',json.dumps(dict(site_id=1006,machine_id=1030)))
+        z.writestr('controller/run/worker.log',
+            '2026-11-25 02:30:03,068 ERROR [site 1006] Join failed for secret_account\n'
+            'poker_controller.bluffpoker.BluffPokerError: buy-in-seat: MAINTENANCE_SCHEDULED (code=409, ext=None)\n'
+            '2026-11-25 02:31:21,017 WARNING [site 1006] BluffPoker engine error at table 5a84c7ac: UNKNOWN_TABLE\n'
+            '2026-11-25 02:31:45,602 WARNING [site 1006] Lobby observer failed for secret_observer: TimeoutError\n'
+            '2026-11-25 02:32:00,000 WARNING [site 1006] Leave failed: table: NOT_AT_TABLE (code=1, ext=None)\n')
+    result=summarize(out.getvalue(),1006,1030,topic='connectivity')
+    codes={e['code'] for e in result['events']}
+    assert {'platform_maintenance','platform_unknown_table','lobby_observer_timeout','platform_not_at_table','TimeoutError'}<=codes
+    maintenance=next(e for e in result['events'] if e['code']=='platform_maintenance')
+    assert maintenance['timestamp_reported']=='2026-11-25 02:30:03,068' and maintenance['site_attribution']=='tagged'
+    assert 'secret_' not in json.dumps(result) and '5a84c7ac' not in json.dumps(result)

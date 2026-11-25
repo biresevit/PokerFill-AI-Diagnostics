@@ -162,11 +162,21 @@ class Data:
                     'limitations':['Configured capacity is not immediately available capacity. Cooldowns, credentials, funds, game/stake limits and ownership can reduce it.',
                         'CredentialsConfigured reports stored credentials only. EvenBet workers use their platform-default authentication for configured usernames, so missing stored email/password is not evidence of an unusable login. Login usability requires observed outcomes.']}
             elif name == 'get_join_outcomes':
-                result = db.rows('''SELECT TOP(100) Kind,Status,ResultCode,COUNT(*) AS Count,
-                    MIN(UpdatedUtc) AS FirstUtc,MAX(UpdatedUtc) AS LastUtc
+                rows = db.rows(f'''SELECT TOP(400) Kind,Status,ResultCode,{PLATFORM_TAIL_SQL} AS PlatformTail,
+                    COUNT(*) AS Count,MIN(UpdatedUtc) AS FirstUtc,MAX(UpdatedUtc) AS LastUtc
                     FROM scheduler.Command WHERE SiteId=%s
                     AND UpdatedUtc>=%s AND UpdatedUtc<%s
-                    GROUP BY Kind,Status,ResultCode ORDER BY COUNT(*) DESC''', sid, *sql_window)
+                    GROUP BY Kind,Status,ResultCode,{PLATFORM_TAIL_SQL} ORDER BY COUNT(*) DESC''', sid, *sql_window)
+                groups = {}
+                for row in rows:
+                    code = platform_code(row.get('PlatformTail'))
+                    key = (row['Kind'], row['Status'], row['ResultCode'], code)
+                    group = groups.setdefault(key, dict(Kind=key[0], Status=key[1], ResultCode=key[2], PlatformCode=code,
+                        Count=0, FirstUtc=row['FirstUtc'], LastUtc=row['LastUtc']))
+                    group['Count'] += row['Count']
+                    group['FirstUtc'] = min(group['FirstUtc'], row['FirstUtc'])
+                    group['LastUtc'] = max(group['LastUtc'], row['LastUtc'])
+                result = sorted(groups.values(), key=lambda g: -g['Count'])[:100]
             elif name == 'get_tournament_diagnostics':
                 result = {'plans': db.rows('''SELECT TOP(100) SeriesName,TotalBots,EarlyPercent,EarlyHours
                     FROM scheduler.MttPlan WHERE SiteId=%s AND (%s='' OR CHARINDEX(%s,SeriesName)>0)
@@ -184,9 +194,12 @@ class Data:
                 from .log_signals import read
                 result = read(db, s, hours, machine_id=machine_id, around_utc=around_utc, topic=topic, from_utc=from_utc, to_utc=to_utc)
             elif name == 'get_incident_timeline':
-                result = {'commands': db.rows('''SELECT TOP(100) CommandId,MachineId,Kind,Status,ResultCode,
-                        CreatedUtc,UpdatedUtc FROM scheduler.Command WHERE SiteId=%s
-                        AND UpdatedUtc>=%s AND UpdatedUtc<%s ORDER BY UpdatedUtc DESC''', sid, *sql_window),
+                commands = db.rows(f'''SELECT TOP(100) CommandId,MachineId,Kind,Status,ResultCode,
+                        {PLATFORM_TAIL_SQL} AS PlatformTail,CreatedUtc,UpdatedUtc FROM scheduler.Command WHERE SiteId=%s
+                        AND UpdatedUtc>=%s AND UpdatedUtc<%s ORDER BY UpdatedUtc DESC''', sid, *sql_window)
+                for command in commands:
+                    command['PlatformCode'] = platform_code(command.pop('PlatformTail', None))
+                result = {'commands': commands,
                     'session_ends': db.rows('''SELECT TOP(100) MachineId,ActualEndUtc,EndReason
                         FROM scheduler.AccountSession WHERE SiteId=%s
                         AND ActualEndUtc>=%s AND ActualEndUtc<%s ORDER BY ActualEndUtc DESC''', sid, *sql_window),
@@ -235,6 +248,19 @@ class Data:
                 'customer_name':customer.get('name') if customer else None,
                 'platform': site.get('platform'), 'row_limit': 100,
                 'coverage': 'Current database state; result sets are bounded and may be truncated at 100 rows.', 'data': result}
+
+
+# Worker result texts end with "<operation>: <PLATFORM_CODE> (code=<n>, ...)". Only the short text before
+# " (code=" is read, and only an upper-case platform code from it ever reaches the model, so account names
+# and table IDs earlier in the message stay out.
+PLATFORM_TAIL_SQL = ("CASE WHEN CHARINDEX(N' (code=',ResultText)>1 "
+                     "THEN RIGHT(LEFT(ResultText,CHARINDEX(N' (code=',ResultText)-1),48) END")
+PLATFORM_CODE = re.compile(r'(?:^|[\s:])([A-Z][A-Z0-9_]{2,39})$')
+
+
+def platform_code(tail):
+    match = PLATFORM_CODE.search(tail or '')
+    return match.group(1) if match else None
 
 
 def historical_ring_target(db, store, scope, site_id, start, end):

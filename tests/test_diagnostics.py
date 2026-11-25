@@ -142,3 +142,25 @@ def test_broker_derives_scope(monkeypatch):
         return Response()
     monkeypatch.setattr('urllib.request.urlopen',open_)
     dispatch(Store(),1006,'GET',None,{'scope':scope(customer_id=999)})
+
+
+def test_join_outcomes_expose_platform_code_without_account_names():
+    from contextlib import contextmanager
+    from datetime import datetime
+    from pokerfill_ai.integrations.pokerfill.data import platform_code
+    assert platform_code('during joining the table and taking a seat: BluffPokerError: buy-in-seat: MAINTENANCE_SCHEDULED')=='MAINTENANCE_SCHEDULED'
+    assert platform_code('BluffPokerError: table: NOT_AT_TABLE')=='NOT_AT_TABLE'
+    assert platform_code('Leave failed for Perry')is None and platform_code(None) is None
+    at=datetime(2026,11,25,1,30)
+    rows=[dict(Kind='leave',Status='failed',ResultCode='BluffPokerError',PlatformTail='g the table: BluffPokerError: table: NOT_AT_TABLE',Count=20,FirstUtc=at,LastUtc=at),
+          dict(Kind='leave',Status='failed',ResultCode='BluffPokerError',PlatformTail='he table: BluffPokerError: table: NOT_AT_TABLE',Count=18,FirstUtc=at,LastUtc=at),
+          dict(Kind='join',Status='failed',ResultCode='BluffPokerError',PlatformTail='seat: BluffPokerError: buy-in-seat: MAINTENANCE_SCHEDULED',Count=1,FirstUtc=at,LastUtc=at)]
+    class Db:
+        def one(self,sql,*args):
+            return dict(id=1006,customer_id=3,platform='bluffpoker',timezone='UTC',enabled=True,version=1,joins_paused=False,currency='USD',n=0)
+        def rows(self,sql,*args):return rows
+    @contextmanager
+    def factory():yield Db()
+    data=Data(service.Scope(**scope()),factory).read('get_join_outcomes',24)['data']
+    assert [(g['PlatformCode'],g['Count']) for g in data]==[('NOT_AT_TABLE',38),('MAINTENANCE_SCHEDULED',1)]
+    assert all('PlatformTail' not in g for g in data)
